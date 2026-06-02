@@ -586,16 +586,27 @@ async def vase_info(interaction: discord.Interaction, name: str):
     v = res.data[0]
     embed = discord.Embed(title=f"🏺 {v['name']}", color=PINK)
 
+    # Fetch rarity for each blossom slot to display correct icon
+    all_blossom_names = [v[k] for k in VASE_SLOTS if v.get(k)]
+    rarity_map = {}
+    if all_blossom_names:
+        rarity_res = supabase.table("blossoms").select("name, rarity").in_("name", all_blossom_names).execute()
+        rarity_map = {b["name"]: b["rarity"] for b in rarity_res.data}
+
+    def blossom_line(name):
+        ico = rarity_icon(rarity_map.get(name, "")) if rarity_map.get(name) else "🌸"
+        return f"{ico} {name}"
+
     primaries   = [v[k] for k in ["primary_1",   "primary_2",   "primary_3"]   if v.get(k)]
     secondaries = [v[k] for k in ["secondary_1", "secondary_2", "secondary_3"] if v.get(k)]
     tertiaries  = [v[k] for k in ["tertiary_1",  "tertiary_2",  "tertiary_3"]  if v.get(k)]
 
     if primaries:
-        embed.add_field(name="Primary Flowers",  value="\n".join(f"🌸 {b}" for b in primaries),   inline=False)
+        embed.add_field(name="Primary Flowers",   value="\n".join(blossom_line(b) for b in primaries),   inline=False)
     if secondaries:
-        embed.add_field(name="Secondary Flowers", value="\n".join(f"🌸 {b}" for b in secondaries), inline=False)
+        embed.add_field(name="Secondary Flowers", value="\n".join(blossom_line(b) for b in secondaries), inline=False)
     if tertiaries:
-        embed.add_field(name="Accent Flowers",   value="\n".join(f"🌸 {b}" for b in tertiaries),  inline=False)
+        embed.add_field(name="Accent Flowers",    value="\n".join(blossom_line(b) for b in tertiaries),  inline=False)
 
     if v.get("image_url"):
         embed.set_image(url=v["image_url"])
@@ -603,8 +614,11 @@ async def vase_info(interaction: discord.Interaction, name: str):
     await interaction.response.send_message(embed=embed)
 
 
-@tree.command(name="noticeboard", description="Display the current notice board")
+@tree.command(name="noticeboard", description="[Admin] Display the current notice board")
 async def noticeboard(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message("🚫 Only admins can view the notice board.", ephemeral=True)
+        return
     res = supabase.table("notices").select("gamename, notice").order("created_at").execute()
     if not res.data:
         await interaction.response.send_message(
@@ -647,8 +661,7 @@ async def blossom_help(interaction: discord.Interaction):
             "`/blossom <name>` — Show blossom info, vases it appears in, and who owns it\n"
             "`/myhoard <gamename>` — Show all blossoms in a florist's hoard\n"
             "`/keyhoard <gamename>` — Show only the blossoms that count toward the whitelist\n"
-            "`/vase <name>` — Show vase info and its blossom slots\n"
-            "`/noticeboard` — Show the current notice board"
+            "`/vase <name>` — Show vase info and its blossom slots"
         ),
         inline=False,
     )
@@ -664,7 +677,8 @@ async def blossom_help(interaction: discord.Interaction):
             "`/markdone <gamename>` — Mark a florist as done for this week\n"
             "`/cleardone` — Remove all done markers from all florists\n"
             "`/addnotice <gamename> <notice>` — Add a notice for a florist\n"
-            "`/removenotice <gamename>` — Remove a florist's notice"
+            "`/removenotice <gamename>` — Remove a florist's notice\n"
+            "`/noticeboard` — View the current notice board"
         ),
         inline=False,
     )
@@ -1068,15 +1082,19 @@ async def whitelist(interaction: discord.Interaction, sort: str = "tier"):
         return
 
     blossom_names = list({row["blossom"] for row in ownership.data})
-    points_map = {
-        b["name"]: b["points"] for b in
-        supabase.table("blossoms").select("name, points").in_("name", blossom_names).execute().data
+    blossom_details = {
+        b["name"]: b for b in
+        supabase.table("blossoms").select("name, points, rarity").in_("name", blossom_names).execute().data
     }
 
     member_tiers: dict[str, dict[int, list[str]]] = {}
     for row in ownership.data:
-        pts = points_map.get(row["blossom"])
+        b = blossom_details.get(row["blossom"], {})
+        pts = b.get("points")
         if pts not in POINT_TIERS:
+            continue
+        # Skip Green (Ordinary) rarity — everyone has them, no need to whitelist
+        if b.get("rarity") == "Green":
             continue
         member_tiers.setdefault(row["gamename"], {}).setdefault(pts, []).append(row["blossom"])
 
