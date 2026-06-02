@@ -154,10 +154,7 @@ async def send_hoard_embeds(interaction, gamename: str, rows: list, bl_map: dict
         embed = discord.Embed(title=title, description="\n".join(chunk), color=PINK)
         if i == len(chunks) - 1:
             embed.set_footer(text=f"{total} blossom(s)")
-        if i == 0:
-            await interaction.response.send_message(embed=embed)
-        else:
-            await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -440,8 +437,10 @@ async def blossom_info(interaction: discord.Interaction, name: str):
 @app_commands.describe(gamename="The florist's in-game name")
 @app_commands.autocomplete(gamename=florist_autocomplete)
 async def my_hoard(interaction: discord.Interaction, gamename: str):
+    await interaction.response.defer()
+
     if not supabase.table("players").select("id").eq("gamename", gamename).execute().data:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"❌ No florist named **{gamename}** found.", ephemeral=True
         )
         return
@@ -453,7 +452,7 @@ async def my_hoard(interaction: discord.Interaction, gamename: str):
         .execute()
     )
     if not owned.data:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"🌱 **{gamename}**'s hoard is empty! Use `/add` to start adding blossoms."
         )
         return
@@ -468,23 +467,49 @@ async def my_hoard(interaction: discord.Interaction, gamename: str):
         .data
     }
 
-    # Sort by rarity (Red first), then points desc, then alpha
     owned_sorted = sorted(
         owned.data,
         key=lambda row: sort_key_rarity_points_alpha(bl_map.get(row["blossom"], {}))
     )
 
-    await send_hoard_embeds(
-        interaction, gamename, owned_sorted, bl_map, f"🌷 {gamename}'s Hoard"
-    )
+    lines = []
+    for row in owned_sorted:
+        b    = bl_map.get(row["blossom"], {})
+        rico = rarity_icon(b.get("rarity", "")) if b.get("rarity") else ""
+        line = f"{rico} **{row['blossom']}** — {b.get('points', '?')} pts"
+        if row.get("bonus"):
+            line += f"  {bonus_icon(row['bonus'])} +{row['bonus']}"
+        lines.append(line)
+
+    chunks = []
+    current, cur_len = [], 0
+    for line in lines:
+        if cur_len + len(line) + 1 > 3800:
+            chunks.append(current)
+            current, cur_len = [line], len(line)
+        else:
+            current.append(line)
+            cur_len += len(line) + 1
+    if current:
+        chunks.append(current)
+
+    total = len(owned_sorted)
+    for i, chunk in enumerate(chunks):
+        title = f"🌷 {gamename}'s Hoard" if i == 0 else f"🌷 {gamename}'s Hoard (cont.)"
+        embed = discord.Embed(title=title, description="\n".join(chunk), color=PINK)
+        if i == len(chunks) - 1:
+            embed.set_footer(text=f"{total} blossom(s) in hoard")
+        await interaction.followup.send(embed=embed)
 
 
 @tree.command(name="keyhoard", description="Show only the blossoms from a florist's hoard that count toward the competition whitelist")
 @app_commands.describe(gamename="The florist's in-game name")
 @app_commands.autocomplete(gamename=florist_autocomplete)
 async def key_hoard(interaction: discord.Interaction, gamename: str):
+    await interaction.response.defer()
+
     if not supabase.table("players").select("id").eq("gamename", gamename).execute().data:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"❌ No florist named **{gamename}** found.", ephemeral=True
         )
         return
@@ -496,7 +521,7 @@ async def key_hoard(interaction: discord.Interaction, gamename: str):
         .execute()
     )
     if not owned.data:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"🌱 **{gamename}**'s hoard is empty!"
         )
         return
@@ -531,7 +556,7 @@ async def key_hoard(interaction: discord.Interaction, gamename: str):
             member_keep.update(tiers[tier])
 
     if not member_keep:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"🌾 **{gamename}** has no blossoms that qualify for the whitelist."
         )
         return
