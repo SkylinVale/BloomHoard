@@ -26,10 +26,8 @@ RARITY_DISPLAY = {
     "Red":    "Celestial",
 }
 
-# Rarity sort order for /myhoard and /keyhoard (Red first)
 RARITY_ORDER = {r: i for i, r in enumerate(["Red", "Gold", "Purple", "Blue", "Green"])}
 
-# Point tiers in descending order — used by /whitelist algorithm
 POINT_TIERS    = [30, 28, 25, 23, 21, 14, 9]
 ALWAYS_INCLUDE = {30, 28, 25}
 MIN_FLOWERS    = 10
@@ -43,10 +41,8 @@ VASE_SLOTS = [
 ]
 
 STAFF_ROLES = {"Vice President", "Steward"}
-
-PINK = discord.Color.from_rgb(255, 182, 193)
-
-# Mountain Time is UTC-7 (MDT) or UTC-7 (MST); we use UTC-7 for Sunday 10pm
+PINK        = discord.Color.from_rgb(255, 182, 193)
+PAGE_SIZE   = 25
 MOUNTAIN_TZ = timezone(timedelta(hours=-7))
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -72,17 +68,14 @@ async def on_ready():
 # ════════════════════════════════════════════════════════════════════════════════
 
 async def weekly_cleardone():
-    """Auto-clears all done markers every Sunday at 10pm Mountain Time."""
     await client.wait_until_ready()
     while not client.is_closed():
         now = datetime.now(MOUNTAIN_TZ)
-        # Calculate seconds until next Sunday 22:00 Mountain
         days_until_sunday = (6 - now.weekday()) % 7
         if days_until_sunday == 0 and now.hour >= 22:
             days_until_sunday = 7
         next_sunday = now.replace(hour=22, minute=0, second=0, microsecond=0) + timedelta(days=days_until_sunday)
-        wait_seconds = (next_sunday - now).total_seconds()
-        await asyncio.sleep(wait_seconds)
+        await asyncio.sleep((next_sunday - now).total_seconds())
         supabase.table("players").update({"done": False}).eq("done", True).execute()
         print("Auto-cleared all done markers (Sunday 10pm Mountain)")
 
@@ -115,7 +108,6 @@ def tier_icon(pts: int) -> str:
 
 
 def sort_key_rarity_points_alpha(b: dict) -> tuple:
-    """Sort by rarity (Red first), then points desc, then name asc."""
     return (
         RARITY_ORDER.get(b.get("rarity", "Green"), 99),
         -b.get("points", 0),
@@ -123,8 +115,8 @@ def sort_key_rarity_points_alpha(b: dict) -> tuple:
     )
 
 
-async def send_hoard_embeds(interaction, gamename: str, rows: list, bl_map: dict, title_prefix: str):
-    """Build and send one or more embeds for a hoard list."""
+def build_hoard_lines(rows: list, bl_map: dict) -> list[str]:
+    """Build display lines for a hoard list."""
     lines = []
     for row in rows:
         b    = bl_map.get(row["blossom"], {})
@@ -133,26 +125,164 @@ async def send_hoard_embeds(interaction, gamename: str, rows: list, bl_map: dict
         if row.get("bonus"):
             line += f"  {bonus_icon(row['bonus'])} +{row['bonus']}"
         lines.append(line)
+    return lines
 
-    chunks = []
-    current, cur_len = [], 0
-    for line in lines:
-        if cur_len + len(line) + 1 > 3800:
-            chunks.append(current)
-            current, cur_len = [line], len(line)
+
+def build_whitelist_lines(kept: list) -> list[str]:
+    """Build display lines for the whitelist."""
+    lines = []
+    for b in kept:
+        ico = rarity_icon(b["rarity"]) if b.get("rarity") else ""
+        lines.append(f"{ico} **{b['name']}** — {b['points']} pts")
+    return lines
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# PAGINATED VIEW
+# ════════════════════════════════════════════════════════════════════════════════
+
+class PaginatedView(discord.ui.View):
+    def __init__(self, lines: list[str], title: str, footer_total: str, ephemeral: bool = False):
+        super().__init__(timeout=300)
+        self.lines         = lines
+        self.title         = title
+        self.footer_total  = footer_total
+        self.ephemeral     = ephemeral
+        self.page          = 0
+        self.total_pages   = max(1, (len(lines) + PAGE_SIZE - 1) // PAGE_SIZE)
+        self._update_components()
+
+    def _page_lines(self) -> list[str]:
+        start = self.page * PAGE_SIZE
+        return self.lines[start:start + PAGE_SIZE]
+
+    def _build_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title=self.title,
+            description="\n".join(self._page_lines()),
+            color=PINK,
+        )
+        embed.set_footer(text=f"{self.footer_total} · Page {self.page + 1}/{self.total_pages}")
+        return embed
+
+    def _update_components(self):
+        self.clear_items()
+
+        # Navigation buttons
+        first  = discord.ui.Button(emoji="⏮️", style=discord.ButtonStyle.grey,  custom_id="first",  disabled=self.page == 0)
+        prev   = discord.ui.Button(emoji="◀️", style=discord.ButtonStyle.grey,  custom_id="prev",   disabled=self.page == 0)
+        page_b = discord.ui.Button(label=f"{self.page + 1}/{self.total_pages}", style=discord.ButtonStyle.blurple, custom_id="page", disabled=True)
+        nxt    = discord.ui.Button(emoji="▶️", style=discord.ButtonStyle.grey,  custom_id="next",   disabled=self.page >= self.total_pages - 1)
+        last   = discord.ui.Button(emoji="⏭️", style=discord.ButtonStyle.grey,  custom_id="last",   disabled=self.page >= self.total_pages - 1)
+
+        first.callback  = self._first
+        prev.callback   = self._prev
+        nxt.callback    = self._next
+        last.callback   = self._last
+
+        self.add_item(first)
+        self.add_item(prev)
+        self.add_item(page_b)
+        self.add_item(nxt)
+        self.add_item(last)
+
+        # Select menu — blossom names on current page (strip formatting)
+        page_lines = self._page_lines()
+        options = []
+        for line in page_lines:
+            # Extract plain blossom name from "icon **Name** — X pts  ..."
+            clean = line
+            for ch in ["🔴","🟠","🟡","🟢","🔵","🟣","⚪"]:
+                clean = clean.replace(ch, "")
+            # Strip discord custom emoji <:name:id>
+            import re
+            clean = re.sub(r"<:[^:]+:\d+>", "", clean)
+            clean = clean.strip()
+            # Extract just the blossom name between ** **
+            match = re.search(r"\*\*(.+?)\*\*", clean)
+            name = match.group(1) if match else clean[:100]
+            options.append(discord.SelectOption(label=name[:100], value=name[:100]))
+
+        if options:
+            select = discord.ui.Select(
+                placeholder="🌸 Look up a blossom on this page...",
+                options=options,
+                custom_id="blossom_select",
+            )
+            select.callback = self._select_blossom
+            self.add_item(select)
+
+    async def _go_to(self, interaction: discord.Interaction, page: int):
+        self.page = page
+        self._update_components()
+        await interaction.response.edit_message(embed=self._build_embed(), view=self)
+
+    async def _first(self, interaction: discord.Interaction):
+        await self._go_to(interaction, 0)
+
+    async def _prev(self, interaction: discord.Interaction):
+        await self._go_to(interaction, max(0, self.page - 1))
+
+    async def _next(self, interaction: discord.Interaction):
+        await self._go_to(interaction, min(self.total_pages - 1, self.page + 1))
+
+    async def _last(self, interaction: discord.Interaction):
+        await self._go_to(interaction, self.total_pages - 1)
+
+    async def _select_blossom(self, interaction: discord.Interaction):
+        name = interaction.data["values"][0]
+        bl = supabase.table("blossoms").select("*").eq("name", name).execute()
+        if not bl.data:
+            await interaction.response.send_message(
+                f"❌ Could not find **{name}**.", ephemeral=True
+            )
+            return
+        b = bl.data[0]
+        rarity_raw     = b.get("rarity", "")
+        rarity_display = RARITY_DISPLAY.get(rarity_raw, rarity_raw)
+
+        embed = discord.Embed(title=f"🌸 {b['name']}", color=PINK)
+        embed.add_field(name="Rarity", value=f"{rarity_icon(rarity_raw)} {rarity_display}", inline=True)
+        embed.add_field(name="Points", value=str(b["points"]),   inline=True)
+        embed.add_field(name="Source", value=b["source"] or "—", inline=True)
+
+        if b.get("thumbnail_url"):
+            embed.set_thumbnail(url=b["thumbnail_url"])
+
+        all_vases = supabase.table("vases").select("name, " + ", ".join(VASE_SLOTS)).execute()
+        matching = sorted(v["name"] for v in all_vases.data if name in [v.get(s) for s in VASE_SLOTS])
+        embed.add_field(
+            name="Found In Vases",
+            value="\n".join(f"🏺 {v}" for v in matching) if matching else "Not part of any vase yet.",
+            inline=False,
+        )
+
+        owners = supabase.table("ownership").select("gamename, bonus").eq("blossom", name).execute()
+        if owners.data:
+            lines = []
+            for row in owners.data:
+                line = f"🌿 {row['gamename']}"
+                if row.get("bonus"):
+                    line += f"  {bonus_icon(row['bonus'])} +{row['bonus']}"
+                lines.append(line)
+            embed.add_field(name=f"Florists ({len(owners.data)})", value="\n".join(lines), inline=False)
         else:
-            current.append(line)
-            cur_len += len(line) + 1
-    if current:
-        chunks.append(current)
+            embed.add_field(name="Florists", value="Nobody owns this blossom yet.", inline=False)
 
-    total = len(rows)
-    for i, chunk in enumerate(chunks):
-        title = f"{title_prefix}" if i == 0 else f"{title_prefix} (cont.)"
-        embed = discord.Embed(title=title, description="\n".join(chunk), color=PINK)
-        if i == len(chunks) - 1:
-            embed.set_footer(text=f"{total} blossom(s)")
-        await interaction.followup.send(embed=embed)
+        if b.get("image_url"):
+            embed.set_image(url=b["image_url"])
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+
+async def send_paginated(interaction, lines: list[str], title: str, footer_total: str, ephemeral: bool = False):
+    view  = PaginatedView(lines, title, footer_total, ephemeral)
+    embed = view._build_embed()
+    await interaction.followup.send(embed=embed, view=view, ephemeral=ephemeral)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -160,35 +290,17 @@ async def send_hoard_embeds(interaction, gamename: str, rows: list, bl_map: dict
 # ════════════════════════════════════════════════════════════════════════════════
 
 async def florist_autocomplete(interaction: discord.Interaction, current: str):
-    res = (
-        supabase.table("players")
-        .select("gamename")
-        .ilike("gamename", f"{current}%")
-        .limit(10)
-        .execute()
-    )
+    res = supabase.table("players").select("gamename").ilike("gamename", f"{current}%").limit(10).execute()
     return [app_commands.Choice(name=r["gamename"], value=r["gamename"]) for r in res.data]
 
 
 async def blossom_autocomplete(interaction: discord.Interaction, current: str):
-    res = (
-        supabase.table("blossoms")
-        .select("name")
-        .ilike("name", f"{current}%")
-        .limit(10)
-        .execute()
-    )
+    res = supabase.table("blossoms").select("name").ilike("name", f"{current}%").limit(10).execute()
     return [app_commands.Choice(name=r["name"], value=r["name"]) for r in res.data]
 
 
 async def vase_autocomplete(interaction: discord.Interaction, current: str):
-    res = (
-        supabase.table("vases")
-        .select("name")
-        .ilike("name", f"{current}%")
-        .limit(10)
-        .execute()
-    )
+    res = supabase.table("vases").select("name").ilike("name", f"{current}%").limit(10).execute()
     return [app_commands.Choice(name=r["name"], value=r["name"]) for r in res.data]
 
 
@@ -201,14 +313,10 @@ async def vase_autocomplete(interaction: discord.Interaction, current: str):
 async def add_florist(interaction: discord.Interaction, gamename: str):
     gamename = gamename.strip()
     if supabase.table("players").select("id").eq("gamename", gamename).execute().data:
-        await interaction.response.send_message(
-            f"🌿 **{gamename}** is already registered as a florist!", ephemeral=True
-        )
+        await interaction.response.send_message(f"🌿 **{gamename}** is already registered as a florist!", ephemeral=True)
         return
     supabase.table("players").insert({"gamename": gamename, "done": False}).execute()
-    await interaction.response.send_message(
-        f"🌱 **{gamename}** has been added as a florist!", ephemeral=True
-    )
+    await interaction.response.send_message(f"🌱 **{gamename}** has been added as a florist!", ephemeral=True)
 
 
 @tree.command(name="removeflorist", description="Remove a florist and all their blossoms")
@@ -217,15 +325,11 @@ async def add_florist(interaction: discord.Interaction, gamename: str):
 async def remove_florist(interaction: discord.Interaction, gamename: str):
     gamename = gamename.strip()
     if not supabase.table("players").select("id").eq("gamename", gamename).execute().data:
-        await interaction.response.send_message(
-            f"❌ No florist named **{gamename}** was found.", ephemeral=True
-        )
+        await interaction.response.send_message(f"❌ No florist named **{gamename}** was found.", ephemeral=True)
         return
     supabase.table("ownership").delete().eq("gamename", gamename).execute()
     supabase.table("players").delete().eq("gamename", gamename).execute()
-    await interaction.response.send_message(
-        f"🍂 **{gamename}** and all their blossoms have been removed.", ephemeral=True
-    )
+    await interaction.response.send_message(f"🍂 **{gamename}** and all their blossoms have been removed.", ephemeral=True)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -236,70 +340,51 @@ async def remove_florist(interaction: discord.Interaction, gamename: str):
 @app_commands.describe(
     gamename="The florist's in-game name",
     blossom1="Blossom 1",
-    blossom2="Blossom 2 (optional)", blossom3="Blossom 3 (optional)",
-    blossom4="Blossom 4 (optional)", blossom5="Blossom 5 (optional)",
-    blossom6="Blossom 6 (optional)", blossom7="Blossom 7 (optional)",
-    blossom8="Blossom 8 (optional)", blossom9="Blossom 9 (optional)",
+    blossom2="Blossom 2 (optional)",  blossom3="Blossom 3 (optional)",
+    blossom4="Blossom 4 (optional)",  blossom5="Blossom 5 (optional)",
+    blossom6="Blossom 6 (optional)",  blossom7="Blossom 7 (optional)",
+    blossom8="Blossom 8 (optional)",  blossom9="Blossom 9 (optional)",
     blossom10="Blossom 10 (optional)",
     bonus="Optional bonus for all listed blossoms: 1 for +1, 2 for +2",
 )
 @app_commands.autocomplete(
     gamename=florist_autocomplete,
-    blossom1=blossom_autocomplete, blossom2=blossom_autocomplete,
-    blossom3=blossom_autocomplete, blossom4=blossom_autocomplete,
-    blossom5=blossom_autocomplete, blossom6=blossom_autocomplete,
-    blossom7=blossom_autocomplete, blossom8=blossom_autocomplete,
-    blossom9=blossom_autocomplete, blossom10=blossom_autocomplete,
+    blossom1=blossom_autocomplete,  blossom2=blossom_autocomplete,
+    blossom3=blossom_autocomplete,  blossom4=blossom_autocomplete,
+    blossom5=blossom_autocomplete,  blossom6=blossom_autocomplete,
+    blossom7=blossom_autocomplete,  blossom8=blossom_autocomplete,
+    blossom9=blossom_autocomplete,  blossom10=blossom_autocomplete,
 )
 async def add_ownership(
     interaction: discord.Interaction,
     gamename: str,
     blossom1: str,
-    blossom2: str | None = None, blossom3: str | None = None,
-    blossom4: str | None = None, blossom5: str | None = None,
-    blossom6: str | None = None, blossom7: str | None = None,
-    blossom8: str | None = None, blossom9: str | None = None,
+    blossom2: str | None = None,  blossom3: str | None = None,
+    blossom4: str | None = None,  blossom5: str | None = None,
+    blossom6: str | None = None,  blossom7: str | None = None,
+    blossom8: str | None = None,  blossom9: str | None = None,
     blossom10: str | None = None,
     bonus: int | None = None,
 ):
     if not supabase.table("players").select("id").eq("gamename", gamename).execute().data:
-        await interaction.response.send_message(
-            f"❌ No florist named **{gamename}**. Use `/addflorist` first.", ephemeral=True
-        )
+        await interaction.response.send_message(f"❌ No florist named **{gamename}**. Use `/addflorist` first.", ephemeral=True)
         return
     if bonus is not None and bonus not in (1, 2):
         await interaction.response.send_message("❌ Bonus must be 1 or 2.", ephemeral=True)
         return
 
-    requested = [b for b in [
-        blossom1, blossom2, blossom3, blossom4, blossom5,
-        blossom6, blossom7, blossom8, blossom9, blossom10
-    ] if b]
-
-    # Validate all blossoms exist
-    valid_names = {
-        r["name"] for r in
-        supabase.table("blossoms").select("name").in_("name", requested).execute().data
-    }
+    requested = [b for b in [blossom1, blossom2, blossom3, blossom4, blossom5,
+                              blossom6, blossom7, blossom8, blossom9, blossom10] if b]
+    valid_names = {r["name"] for r in supabase.table("blossoms").select("name").in_("name", requested).execute().data}
     invalid = [b for b in requested if b not in valid_names]
     if invalid:
-        await interaction.response.send_message(
-            f"❌ These blossoms aren't in the database: {', '.join(invalid)}", ephemeral=True
-        )
+        await interaction.response.send_message(f"❌ These blossoms aren't in the database: {', '.join(invalid)}", ephemeral=True)
         return
 
-    # Check which are already owned
-    already = {
-        r["blossom"] for r in
-        supabase.table("ownership").select("blossom")
-        .eq("gamename", gamename).in_("blossom", requested).execute().data
-    }
-
+    already = {r["blossom"] for r in supabase.table("ownership").select("blossom").eq("gamename", gamename).in_("blossom", requested).execute().data}
     to_add = [b for b in requested if b not in already]
     if to_add:
-        supabase.table("ownership").insert([
-            {"gamename": gamename, "blossom": b, "bonus": bonus} for b in to_add
-        ]).execute()
+        supabase.table("ownership").insert([{"gamename": gamename, "blossom": b, "bonus": bonus} for b in to_add]).execute()
 
     lines = []
     if to_add:
@@ -307,62 +392,32 @@ async def add_ownership(
         lines.append(f"🌱 Added{bonus_str}:\n" + "\n".join(f"• {b}" for b in to_add))
     if already:
         lines.append(f"⚠️ Already in hoard (skipped):\n" + "\n".join(f"• {b}" for b in already))
-
-    await interaction.response.send_message(
-        f"**{gamename}'s hoard update:**\n" + "\n".join(lines), ephemeral=True
-    )
+    await interaction.response.send_message(f"**{gamename}'s hoard update:**\n" + "\n".join(lines), ephemeral=True)
 
 
 @tree.command(name="remove", description="Remove a blossom from a florist's hoard")
-@app_commands.describe(
-    gamename="The florist's in-game name",
-    blossom="The blossom to remove",
-)
+@app_commands.describe(gamename="The florist's in-game name", blossom="The blossom to remove")
 @app_commands.autocomplete(gamename=florist_autocomplete, blossom=blossom_autocomplete)
 async def remove_ownership(interaction: discord.Interaction, gamename: str, blossom: str):
-    res = (
-        supabase.table("ownership")
-        .delete()
-        .eq("gamename", gamename)
-        .eq("blossom", blossom)
-        .execute()
-    )
+    res = supabase.table("ownership").delete().eq("gamename", gamename).eq("blossom", blossom).execute()
     if res.data:
-        await interaction.response.send_message(
-            f"🍂 Removed **{blossom}** from **{gamename}**'s hoard.", ephemeral=True
-        )
+        await interaction.response.send_message(f"🍂 Removed **{blossom}** from **{gamename}**'s hoard.", ephemeral=True)
     else:
-        await interaction.response.send_message(
-            f"❌ **{gamename}** doesn't have **{blossom}** in their hoard.", ephemeral=True
-        )
+        await interaction.response.send_message(f"❌ **{gamename}** doesn't have **{blossom}** in their hoard.", ephemeral=True)
 
 
 @tree.command(name="setbonus", description="Set or update the bonus for a florist's blossom")
-@app_commands.describe(
-    gamename="The florist's in-game name",
-    blossom="The blossom to update",
-    bonus="Bonus value: 1 for +1, 2 for +2",
-)
+@app_commands.describe(gamename="The florist's in-game name", blossom="The blossom to update", bonus="Bonus value: 1 for +1, 2 for +2")
 @app_commands.autocomplete(gamename=florist_autocomplete, blossom=blossom_autocomplete)
 async def set_bonus(interaction: discord.Interaction, gamename: str, blossom: str, bonus: int):
     if bonus not in (1, 2):
         await interaction.response.send_message("❌ Bonus must be 1 or 2.", ephemeral=True)
         return
-    res = (
-        supabase.table("ownership")
-        .update({"bonus": bonus})
-        .eq("gamename", gamename)
-        .eq("blossom", blossom)
-        .execute()
-    )
+    res = supabase.table("ownership").update({"bonus": bonus}).eq("gamename", gamename).eq("blossom", blossom).execute()
     if res.data:
-        await interaction.response.send_message(
-            f"✅ Set **+{bonus}** bonus on **{blossom}** for **{gamename}**.", ephemeral=True
-        )
+        await interaction.response.send_message(f"✅ Set **+{bonus}** bonus on **{blossom}** for **{gamename}**.", ephemeral=True)
     else:
-        await interaction.response.send_message(
-            f"❌ **{gamename}** doesn't have **{blossom}** in their hoard.", ephemeral=True
-        )
+        await interaction.response.send_message(f"❌ **{gamename}** doesn't have **{blossom}** in their hoard.", ephemeral=True)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -374,12 +429,9 @@ async def set_bonus(interaction: discord.Interaction, gamename: str, blossom: st
 @app_commands.autocomplete(name=blossom_autocomplete)
 async def blossom_info(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
-
     bl = supabase.table("blossoms").select("*").eq("name", name).execute()
     if not bl.data:
-        await interaction.followup.send(
-            f"❌ No blossom named **{name}** found.", ephemeral=True
-        )
+        await interaction.followup.send(f"❌ No blossom named **{name}** found.", ephemeral=True)
         return
 
     b = bl.data[0]
@@ -394,15 +446,8 @@ async def blossom_info(interaction: discord.Interaction, name: str):
     if b.get("thumbnail_url"):
         embed.set_thumbnail(url=b["thumbnail_url"])
 
-    all_vases = (
-        supabase.table("vases")
-        .select("name, " + ", ".join(VASE_SLOTS))
-        .execute()
-    )
-    matching = sorted(
-        v["name"] for v in all_vases.data
-        if name in [v.get(slot) for slot in VASE_SLOTS]
-    )
+    all_vases = supabase.table("vases").select("name, " + ", ".join(VASE_SLOTS)).execute()
+    matching = sorted(v["name"] for v in all_vases.data if name in [v.get(s) for s in VASE_SLOTS])
     embed.add_field(
         name="Found In Vases",
         value="\n".join(f"🏺 {v}" for v in matching) if matching else "Not part of any vase yet.",
@@ -411,17 +456,8 @@ async def blossom_info(interaction: discord.Interaction, name: str):
 
     owners = supabase.table("ownership").select("gamename, bonus").eq("blossom", name).execute()
     if owners.data:
-        lines = []
-        for row in owners.data:
-            line = f"🌿 {row['gamename']}"
-            if row.get("bonus"):
-                line += f"  {bonus_icon(row['bonus'])} +{row['bonus']}"
-            lines.append(line)
-        embed.add_field(
-            name=f"Florists ({len(owners.data)})",
-            value="\n".join(lines),
-            inline=False,
-        )
+        lines = [f"🌿 {row['gamename']}" + (f"  {bonus_icon(row['bonus'])} +{row['bonus']}" if row.get("bonus") else "") for row in owners.data]
+        embed.add_field(name=f"Florists ({len(owners.data)})", value="\n".join(lines), inline=False)
     else:
         embed.add_field(name="Florists", value="Nobody owns this blossom yet.", inline=False)
 
@@ -436,68 +472,26 @@ async def blossom_info(interaction: discord.Interaction, name: str):
 @app_commands.autocomplete(gamename=florist_autocomplete)
 async def my_hoard(interaction: discord.Interaction, gamename: str):
     await interaction.response.defer()
-
     if not supabase.table("players").select("id").eq("gamename", gamename).execute().data:
-        await interaction.followup.send(
-            f"❌ No florist named **{gamename}** found.", ephemeral=True
-        )
+        await interaction.followup.send(f"❌ No florist named **{gamename}** found.", ephemeral=True)
         return
 
-    owned = (
-        supabase.table("ownership")
-        .select("blossom, bonus")
-        .eq("gamename", gamename)
-        .execute()
-    )
+    owned = supabase.table("ownership").select("blossom, bonus").eq("gamename", gamename).execute()
     if not owned.data:
-        await interaction.followup.send(
-            f"🌱 **{gamename}**'s hoard is empty! Use `/add` to start adding blossoms."
-        )
+        await interaction.followup.send(f"🌱 **{gamename}**'s hoard is empty! Use `/add` to start adding blossoms.")
         return
 
     blossom_names = [row["blossom"] for row in owned.data]
-    bl_map = {
-        b["name"]: b for b in
-        supabase.table("blossoms")
-        .select("name, points, rarity")
-        .in_("name", blossom_names)
-        .execute()
-        .data
-    }
+    bl_map = {b["name"]: b for b in supabase.table("blossoms").select("name, points, rarity").in_("name", blossom_names).execute().data}
 
-    owned_sorted = sorted(
-        owned.data,
-        key=lambda row: sort_key_rarity_points_alpha(bl_map.get(row["blossom"], {}))
+    owned_sorted = sorted(owned.data, key=lambda row: sort_key_rarity_points_alpha(bl_map.get(row["blossom"], {})))
+    lines = build_hoard_lines(owned_sorted, bl_map)
+
+    await send_paginated(
+        interaction, lines,
+        title=f"🌷 {gamename}'s Hoard",
+        footer_total=f"{len(lines)} blossom(s) in hoard",
     )
-
-    lines = []
-    for row in owned_sorted:
-        b    = bl_map.get(row["blossom"], {})
-        rico = rarity_icon(b.get("rarity", "")) if b.get("rarity") else ""
-        line = f"{rico} **{row['blossom']}** — {b.get('points', '?')} pts"
-        if row.get("bonus"):
-            line += f"  {bonus_icon(row['bonus'])} +{row['bonus']}"
-        lines.append(line)
-
-    chunks = []
-    current, cur_len = [], 0
-    for line in lines:
-        if cur_len + len(line) + 1 > 3800:
-            chunks.append(current)
-            current, cur_len = [line], len(line)
-        else:
-            current.append(line)
-            cur_len += len(line) + 1
-    if current:
-        chunks.append(current)
-
-    total = len(owned_sorted)
-    for i, chunk in enumerate(chunks):
-        title = f"🌷 {gamename}'s Hoard" if i == 0 else f"🌷 {gamename}'s Hoard (cont.)"
-        embed = discord.Embed(title=title, description="\n".join(chunk), color=PINK)
-        if i == len(chunks) - 1:
-            embed.set_footer(text=f"{total} blossom(s) in hoard")
-        await interaction.followup.send(embed=embed)
 
 
 @tree.command(name="keyhoard", description="Show only the blossoms from a florist's hoard that count toward the competition whitelist")
@@ -505,40 +499,23 @@ async def my_hoard(interaction: discord.Interaction, gamename: str):
 @app_commands.autocomplete(gamename=florist_autocomplete)
 async def key_hoard(interaction: discord.Interaction, gamename: str):
     await interaction.response.defer()
-
     if not supabase.table("players").select("id").eq("gamename", gamename).execute().data:
-        await interaction.followup.send(
-            f"❌ No florist named **{gamename}** found.", ephemeral=True
-        )
+        await interaction.followup.send(f"❌ No florist named **{gamename}** found.", ephemeral=True)
         return
 
-    owned = (
-        supabase.table("ownership")
-        .select("blossom, bonus")
-        .eq("gamename", gamename)
-        .execute()
-    )
+    owned = supabase.table("ownership").select("blossom, bonus").eq("gamename", gamename).execute()
     if not owned.data:
-        await interaction.followup.send(
-            f"🌱 **{gamename}**'s hoard is empty!"
-        )
+        await interaction.followup.send(f"🌱 **{gamename}**'s hoard is empty!")
         return
 
     blossom_names = [row["blossom"] for row in owned.data]
-    bl_map = {
-        b["name"]: b for b in
-        supabase.table("blossoms")
-        .select("name, points, rarity")
-        .in_("name", blossom_names)
-        .execute()
-        .data
-    }
+    bl_map = {b["name"]: b for b in supabase.table("blossoms").select("name, points, rarity").in_("name", blossom_names).execute().data}
 
-    # Run the whitelist algorithm for just this florist
     tiers: dict[int, list[str]] = {}
     for row in owned.data:
-        pts = bl_map.get(row["blossom"], {}).get("points")
-        if pts in POINT_TIERS:
+        b = bl_map.get(row["blossom"], {})
+        pts = b.get("points")
+        if pts in POINT_TIERS and b.get("rarity") != "Green":
             tiers.setdefault(pts, []).append(row["blossom"])
 
     member_keep: set[str] = set()
@@ -554,19 +531,17 @@ async def key_hoard(interaction: discord.Interaction, gamename: str):
             member_keep.update(tiers[tier])
 
     if not member_keep:
-        await interaction.followup.send(
-            f"🌾 **{gamename}** has no blossoms that qualify for the whitelist."
-        )
+        await interaction.followup.send(f"🌾 **{gamename}** has no blossoms that qualify for the whitelist.")
         return
 
     key_rows = [row for row in owned.data if row["blossom"] in member_keep]
-    key_rows_sorted = sorted(
-        key_rows,
-        key=lambda row: sort_key_rarity_points_alpha(bl_map.get(row["blossom"], {}))
-    )
+    key_rows_sorted = sorted(key_rows, key=lambda row: sort_key_rarity_points_alpha(bl_map.get(row["blossom"], {})))
+    lines = build_hoard_lines(key_rows_sorted, bl_map)
 
-    await send_hoard_embeds(
-        interaction, gamename, key_rows_sorted, bl_map, f"🔑 {gamename}'s Key Hoard"
+    await send_paginated(
+        interaction, lines,
+        title=f"🔑 {gamename}'s Key Hoard",
+        footer_total=f"{len(lines)} blossom(s) qualify for whitelist",
     )
 
 
@@ -574,26 +549,24 @@ async def key_hoard(interaction: discord.Interaction, gamename: str):
 @app_commands.describe(name="The vase to look up")
 @app_commands.autocomplete(name=vase_autocomplete)
 async def vase_info(interaction: discord.Interaction, name: str):
+    await interaction.response.defer()
     res = supabase.table("vases").select("*").eq("name", name).execute()
     if not res.data:
-        await interaction.response.send_message(
-            f"❌ No vase named **{name}** found.", ephemeral=True
-        )
+        await interaction.followup.send(f"❌ No vase named **{name}** found.", ephemeral=True)
         return
 
     v = res.data[0]
     embed = discord.Embed(title=f"🏺 {v['name']}", color=PINK)
 
-    # Fetch rarity for each blossom slot to display correct icon
     all_blossom_names = [v[k] for k in VASE_SLOTS if v.get(k)]
     rarity_map = {}
     if all_blossom_names:
         rarity_res = supabase.table("blossoms").select("name, rarity").in_("name", all_blossom_names).execute()
         rarity_map = {b["name"]: b["rarity"] for b in rarity_res.data}
 
-    def blossom_line(name):
-        ico = rarity_icon(rarity_map.get(name, "")) if rarity_map.get(name) else "🌸"
-        return f"{ico} {name}"
+    def blossom_line(bname):
+        ico = rarity_icon(rarity_map.get(bname, "")) if rarity_map.get(bname) else "🌸"
+        return f"{ico} {bname}"
 
     primaries   = [v[k] for k in ["primary_1",   "primary_2",   "primary_3"]   if v.get(k)]
     secondaries = [v[k] for k in ["secondary_1", "secondary_2", "secondary_3"] if v.get(k)]
@@ -609,7 +582,7 @@ async def vase_info(interaction: discord.Interaction, name: str):
     if v.get("image_url"):
         embed.set_image(url=v["image_url"])
 
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 
 @tree.command(name="noticeboard", description="[Admin] Display the current notice board")
@@ -619,67 +592,45 @@ async def noticeboard(interaction: discord.Interaction):
         return
     res = supabase.table("notices").select("gamename, notice").order("created_at").execute()
     if not res.data:
-        await interaction.response.send_message(
-            "📋 The notice board is empty.", ephemeral=False
-        )
+        await interaction.response.send_message("📋 The notice board is empty.", ephemeral=True)
         return
     embed = discord.Embed(title="📋 Notice Board", color=PINK)
     for row in res.data:
         embed.add_field(name=f"🌿 {row['gamename']}", value=row["notice"], inline=False)
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @tree.command(name="blossomhelp", description="Show how to use the Blossom Hoard Bot")
 async def blossom_help(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="🌸 Blossom Hoard Bot — Help",
-        description="Here's a quick guide to all available commands.",
-        color=PINK,
-    )
-    embed.add_field(
-        name="🌿 Florists",
-        value=(
-            "`/addflorist <gamename>` — Register a new florist\n"
-            "`/removeflorist <gamename>` — Remove a florist and their hoard"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="🌱 Managing a Hoard",
-        value=(
-            "`/add <gamename> <blossom(s)> [bonus]` — Add up to 10 blossoms at once\n"
-            "`/remove <gamename> <blossom>` — Remove a blossom from a hoard\n"
-            "`/setbonus <gamename> <blossom> <bonus>` — Set or update a +1 or +2 bonus"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="🔍 Looking Things Up",
-        value=(
-            "`/blossom <name>` — Show blossom info, vases it appears in, and who owns it\n"
-            "`/myhoard <gamename>` — Show all blossoms in a florist's hoard\n"
-            "`/keyhoard <gamename>` — Show only the blossoms that count toward the whitelist\n"
-            "`/vase <name>` — Show vase info and its blossom slots"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="🔒 Admin Only",
-        value=(
-            "`/addblossom` — Add a new blossom to the database\n"
-            "`/updateblossom <name>` — Update any field on a blossom (including rename)\n"
-            "`/removeblossom <name>` — Remove a blossom from the database\n"
-            "`/addvase` — Add a new vase to the database\n"
-            "`/updatevase <name>` — Update any field on a vase (including rename)\n"
-            "`/whitelist [sort]` — Generate the optimal competition keep list\n"
-            "`/markdone <gamename>` — Mark a florist as done for this week\n"
-            "`/cleardone` — Remove all done markers from all florists\n"
-            "`/addnotice <gamename> <notice>` — Add a notice for a florist\n"
-            "`/removenotice <gamename>` — Remove a florist's notice\n"
-            "`/noticeboard` — View the current notice board"
-        ),
-        inline=False,
-    )
+    embed = discord.Embed(title="🌸 Blossom Hoard Bot — Help", description="Here's a quick guide to all available commands.", color=PINK)
+    embed.add_field(name="🌿 Florists", value=(
+        "`/addflorist <gamename>` — Register a new florist\n"
+        "`/removeflorist <gamename>` — Remove a florist and their hoard"
+    ), inline=False)
+    embed.add_field(name="🌱 Managing a Hoard", value=(
+        "`/add <gamename> <blossom(s)> [bonus]` — Add up to 10 blossoms at once\n"
+        "`/remove <gamename> <blossom>` — Remove a blossom from a hoard\n"
+        "`/setbonus <gamename> <blossom> <bonus>` — Set or update a +1 or +2 bonus"
+    ), inline=False)
+    embed.add_field(name="🔍 Looking Things Up", value=(
+        "`/blossom <name>` — Show blossom info, vases it appears in, and who owns it\n"
+        "`/myhoard <gamename>` — Show all blossoms in a florist's hoard\n"
+        "`/keyhoard <gamename>` — Show only the blossoms that count toward the whitelist\n"
+        "`/vase <name>` — Show vase info and its blossom slots"
+    ), inline=False)
+    embed.add_field(name="🔒 Admin Only", value=(
+        "`/addblossom` — Add a new blossom to the database\n"
+        "`/updateblossom <name>` — Update any field on a blossom (including rename)\n"
+        "`/removeblossom <name>` — Remove a blossom from the database\n"
+        "`/addvase` — Add a new vase to the database\n"
+        "`/updatevase <name>` — Update any field on a vase (including rename)\n"
+        "`/whitelist [sort]` — Generate the optimal competition keep list\n"
+        "`/markdone <gamename>` — Mark a florist as done for this week\n"
+        "`/cleardone` — Remove all done markers from all florists\n"
+        "`/addnotice <gamename> <notice>` — Add a notice for a florist\n"
+        "`/removenotice <gamename>` — Remove a florist's notice\n"
+        "`/noticeboard` — View the current notice board"
+    ), inline=False)
     embed.set_footer(text="All name fields support autocomplete — start typing to see options!")
     await interaction.response.send_message(embed=embed)
 
@@ -690,84 +641,55 @@ async def blossom_help(interaction: discord.Interaction):
 
 @tree.command(name="addblossom", description="[Admin] Add a new blossom to the database")
 @app_commands.describe(
-    name="Blossom name",
-    rarity="Rarity: Green, Blue, Purple, Gold, or Red",
-    points="Point value: 30, 28, 25, 23, 21, 14, or 9",
-    source="Where the blossom comes from",
-    image_url="Full image URL from Supabase Storage (optional — add later via /updateblossom)",
-    thumbnail_url="Thumbnail URL from Supabase Storage (optional — add later via /updateblossom)",
+    name="Blossom name", rarity="Rarity: Green, Blue, Purple, Gold, or Red",
+    points="Point value: 30, 28, 25, 23, 21, 14, or 9", source="Where the blossom comes from",
+    image_url="Full image URL (optional — add later via /updateblossom)",
+    thumbnail_url="Thumbnail URL (optional — add later via /updateblossom)",
 )
 async def add_blossom(
-    interaction: discord.Interaction,
-    name: str,
-    rarity: str,
-    points: int,
-    source: str,
-    image_url: str | None = None,
-    thumbnail_url: str | None = None,
+    interaction: discord.Interaction, name: str, rarity: str, points: int, source: str,
+    image_url: str | None = None, thumbnail_url: str | None = None,
 ):
     if not is_admin(interaction):
         await interaction.response.send_message("🚫 Only admins can add blossoms.", ephemeral=True)
         return
     rarity = rarity.strip().capitalize()
     if rarity not in RARITIES:
-        await interaction.response.send_message(
-            f"❌ Invalid rarity. Choose from: {', '.join(RARITIES)}", ephemeral=True
-        )
+        await interaction.response.send_message(f"❌ Invalid rarity. Choose from: {', '.join(RARITIES)}", ephemeral=True)
         return
     if supabase.table("blossoms").select("id").eq("name", name).execute().data:
-        await interaction.response.send_message(
-            f"❌ **{name}** already exists in the blossom database.", ephemeral=True
-        )
+        await interaction.response.send_message(f"❌ **{name}** already exists in the blossom database.", ephemeral=True)
         return
-    supabase.table("blossoms").insert({
-        "name": name, "rarity": rarity, "points": points, "source": source,
-        "image_url": image_url, "thumbnail_url": thumbnail_url,
-    }).execute()
-    await interaction.response.send_message(
-        f"🌸 **{name}** has been added to the blossom database!", ephemeral=True
-    )
+    supabase.table("blossoms").insert({"name": name, "rarity": rarity, "points": points, "source": source, "image_url": image_url, "thumbnail_url": thumbnail_url}).execute()
+    await interaction.response.send_message(f"🌸 **{name}** has been added to the blossom database!", ephemeral=True)
 
 
 @tree.command(name="updateblossom", description="[Admin] Update any field on an existing blossom")
 @app_commands.describe(
-    name="The blossom to update",
-    new_name="Rename the blossom (leave blank to keep existing)",
-    rarity="New rarity (leave blank to keep existing)",
-    points="New point value (leave blank to keep existing)",
-    source="New source (leave blank to keep existing)",
-    image_url="New image URL (leave blank to keep existing)",
-    thumbnail_url="New thumbnail URL (leave blank to keep existing)",
+    name="The blossom to update", new_name="Rename the blossom",
+    rarity="New rarity", points="New point value", source="New source",
+    image_url="New image URL", thumbnail_url="New thumbnail URL",
 )
 @app_commands.autocomplete(name=blossom_autocomplete)
 async def update_blossom(
-    interaction: discord.Interaction,
-    name: str,
-    new_name: str | None = None,
-    rarity: str | None = None,
-    points: int | None = None,
-    source: str | None = None,
-    image_url: str | None = None,
-    thumbnail_url: str | None = None,
+    interaction: discord.Interaction, name: str,
+    new_name: str | None = None, rarity: str | None = None, points: int | None = None,
+    source: str | None = None, image_url: str | None = None, thumbnail_url: str | None = None,
 ):
     if not is_admin(interaction):
         await interaction.response.send_message("🚫 Only admins can update blossoms.", ephemeral=True)
         return
     if not supabase.table("blossoms").select("id").eq("name", name).execute().data:
-        await interaction.response.send_message(
-            f"❌ No blossom named **{name}** was found.", ephemeral=True
-        )
+        await interaction.response.send_message(f"❌ No blossom named **{name}** was found.", ephemeral=True)
         return
 
     changed = []
 
-    # Handle rename — ON UPDATE CASCADE automatically updates ownership and vases
+    # Rename — update blossoms first (CASCADE handles ownership), then vase slots manually
     if new_name is not None:
         new_name = new_name.strip()
         if supabase.table("blossoms").select("id").eq("name", new_name).execute().data:
-            await interaction.response.send_message(
-                f"❌ A blossom named **{new_name}** already exists.", ephemeral=True
-            )
+            await interaction.response.send_message(f"❌ A blossom named **{new_name}** already exists.", ephemeral=True)
             return
         supabase.table("blossoms").update({"name": new_name}).eq("name", name).execute()
         for slot in VASE_SLOTS:
@@ -779,9 +701,7 @@ async def update_blossom(
     if rarity is not None:
         rarity = rarity.strip().capitalize()
         if rarity not in RARITIES:
-            await interaction.response.send_message(
-                f"❌ Invalid rarity. Choose from: {', '.join(RARITIES)}", ephemeral=True
-            )
+            await interaction.response.send_message(f"❌ Invalid rarity. Choose from: {', '.join(RARITIES)}", ephemeral=True)
             return
         updates["rarity"] = rarity
     if points        is not None: updates["points"]        = points
@@ -794,14 +714,10 @@ async def update_blossom(
         changed.extend(updates.keys())
 
     if not changed:
-        await interaction.response.send_message(
-            "❌ You didn't provide any fields to update.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ You didn't provide any fields to update.", ephemeral=True)
         return
 
-    await interaction.response.send_message(
-        f"✅ **{name}** updated! Fields changed: {', '.join(changed)}", ephemeral=True
-    )
+    await interaction.response.send_message(f"✅ **{name}** updated! Fields changed: {', '.join(changed)}", ephemeral=True)
 
 
 @tree.command(name="removeblossom", description="[Admin] Remove a blossom from the database")
@@ -814,28 +730,19 @@ async def remove_blossom(interaction: discord.Interaction, name: str):
     supabase.table("ownership").delete().eq("blossom", name).execute()
     res = supabase.table("blossoms").delete().eq("name", name).execute()
     if res.data:
-        await interaction.response.send_message(
-            f"🍂 **{name}** has been removed from the database.", ephemeral=True
-        )
+        await interaction.response.send_message(f"🍂 **{name}** has been removed from the database.", ephemeral=True)
     else:
-        await interaction.response.send_message(
-            f"❌ No blossom named **{name}** was found.", ephemeral=True
-        )
+        await interaction.response.send_message(f"❌ No blossom named **{name}** was found.", ephemeral=True)
 
 
 @tree.command(name="addvase", description="[Admin] Add a new vase to the database")
 @app_commands.describe(
-    name="Vase name",
-    primary_1="Primary blossom 1 (required)",
-    secondary_1="Secondary blossom 1 (required)",
-    tertiary_1="Accent blossom 1 (required)",
-    primary_2="Primary blossom 2 (optional)",
-    primary_3="Primary blossom 3 (optional)",
-    secondary_2="Secondary blossom 2 (optional)",
-    secondary_3="Secondary blossom 3 (optional)",
-    tertiary_2="Accent blossom 2 (optional)",
-    tertiary_3="Accent blossom 3 (optional)",
-    image_url="Image URL from Supabase Storage (optional — add later via Supabase dashboard)",
+    name="Vase name", primary_1="Primary blossom 1 (required)",
+    secondary_1="Secondary blossom 1 (required)", tertiary_1="Accent blossom 1 (required)",
+    primary_2="Primary blossom 2 (optional)", primary_3="Primary blossom 3 (optional)",
+    secondary_2="Secondary blossom 2 (optional)", secondary_3="Secondary blossom 3 (optional)",
+    tertiary_2="Accent blossom 2 (optional)", tertiary_3="Accent blossom 3 (optional)",
+    image_url="Image URL (optional — add later via Supabase dashboard)",
 )
 @app_commands.autocomplete(
     primary_1=blossom_autocomplete,   primary_2=blossom_autocomplete,   primary_3=blossom_autocomplete,
@@ -843,41 +750,24 @@ async def remove_blossom(interaction: discord.Interaction, name: str):
     tertiary_1=blossom_autocomplete,  tertiary_2=blossom_autocomplete,  tertiary_3=blossom_autocomplete,
 )
 async def add_vase(
-    interaction: discord.Interaction,
-    name: str,
-    primary_1: str,
-    secondary_1: str,
-    tertiary_1: str,
-    primary_2: str | None = None,
-    primary_3: str | None = None,
-    secondary_2: str | None = None,
-    secondary_3: str | None = None,
-    tertiary_2: str | None = None,
-    tertiary_3: str | None = None,
+    interaction: discord.Interaction, name: str,
+    primary_1: str, secondary_1: str, tertiary_1: str,
+    primary_2: str | None = None, primary_3: str | None = None,
+    secondary_2: str | None = None, secondary_3: str | None = None,
+    tertiary_2: str | None = None, tertiary_3: str | None = None,
     image_url: str | None = None,
 ):
     if not is_admin(interaction):
         await interaction.response.send_message("🚫 Only admins can add vases.", ephemeral=True)
         return
     if supabase.table("vases").select("id").eq("name", name).execute().data:
-        await interaction.response.send_message(
-            f"❌ **{name}** already exists in the vase database.", ephemeral=True
-        )
+        await interaction.response.send_message(f"❌ **{name}** already exists in the vase database.", ephemeral=True)
         return
-    provided = [b for b in [
-        primary_1, primary_2, primary_3,
-        secondary_1, secondary_2, secondary_3,
-        tertiary_1, tertiary_2, tertiary_3,
-    ] if b]
-    valid_names = {
-        r["name"] for r in
-        supabase.table("blossoms").select("name").in_("name", provided).execute().data
-    }
+    provided = [b for b in [primary_1, primary_2, primary_3, secondary_1, secondary_2, secondary_3, tertiary_1, tertiary_2, tertiary_3] if b]
+    valid_names = {r["name"] for r in supabase.table("blossoms").select("name").in_("name", provided).execute().data}
     invalid = [b for b in provided if b not in valid_names]
     if invalid:
-        await interaction.response.send_message(
-            f"❌ These blossoms aren't in the database yet: {', '.join(invalid)}", ephemeral=True
-        )
+        await interaction.response.send_message(f"❌ These blossoms aren't in the database yet: {', '.join(invalid)}", ephemeral=True)
         return
     supabase.table("vases").insert({
         "name": name, "image_url": image_url,
@@ -885,18 +775,15 @@ async def add_vase(
         "secondary_1": secondary_1, "secondary_2": secondary_2, "secondary_3": secondary_3,
         "tertiary_1": tertiary_1,   "tertiary_2": tertiary_2,   "tertiary_3": tertiary_3,
     }).execute()
-    await interaction.response.send_message(
-        f"🏺 **{name}** has been added to the vase database!", ephemeral=True
-    )
+    await interaction.response.send_message(f"🏺 **{name}** has been added to the vase database!", ephemeral=True)
 
 
 @tree.command(name="updatevase", description="[Admin] Update any field on an existing vase")
 @app_commands.describe(
-    name="The vase to update",
-    new_name="Rename the vase (leave blank to keep existing)",
-    primary_1="New primary blossom 1",   primary_2="New primary blossom 2",   primary_3="New primary blossom 3",
+    name="The vase to update", new_name="Rename the vase",
+    primary_1="New primary blossom 1",     primary_2="New primary blossom 2",   primary_3="New primary blossom 3",
     secondary_1="New secondary blossom 1", secondary_2="New secondary blossom 2", secondary_3="New secondary blossom 3",
-    tertiary_1="New accent blossom 1",   tertiary_2="New accent blossom 2",   tertiary_3="New accent blossom 3",
+    tertiary_1="New accent blossom 1",     tertiary_2="New accent blossom 2",   tertiary_3="New accent blossom 3",
     image_url="New image URL",
 )
 @app_commands.autocomplete(
@@ -906,9 +793,7 @@ async def add_vase(
     tertiary_1=blossom_autocomplete,  tertiary_2=blossom_autocomplete,  tertiary_3=blossom_autocomplete,
 )
 async def update_vase(
-    interaction: discord.Interaction,
-    name: str,
-    new_name: str | None = None,
+    interaction: discord.Interaction, name: str, new_name: str | None = None,
     primary_1: str | None = None,   primary_2: str | None = None,   primary_3: str | None = None,
     secondary_1: str | None = None, secondary_2: str | None = None, secondary_3: str | None = None,
     tertiary_1: str | None = None,  tertiary_2: str | None = None,  tertiary_3: str | None = None,
@@ -918,19 +803,14 @@ async def update_vase(
         await interaction.response.send_message("🚫 Only admins can update vases.", ephemeral=True)
         return
     if not supabase.table("vases").select("id").eq("name", name).execute().data:
-        await interaction.response.send_message(
-            f"❌ No vase named **{name}** was found.", ephemeral=True
-        )
+        await interaction.response.send_message(f"❌ No vase named **{name}** was found.", ephemeral=True)
         return
 
     changed = []
-
     if new_name is not None:
         new_name = new_name.strip()
         if supabase.table("vases").select("id").eq("name", new_name).execute().data:
-            await interaction.response.send_message(
-                f"❌ A vase named **{new_name}** already exists.", ephemeral=True
-            )
+            await interaction.response.send_message(f"❌ A vase named **{new_name}** already exists.", ephemeral=True)
             return
         supabase.table("vases").update({"name": new_name}).eq("name", name).execute()
         changed.append("name")
@@ -947,31 +827,20 @@ async def update_vase(
             updates[field] = val
 
     if updates:
-        # Validate any blossom fields
         blossom_fields = {k: v for k, v in updates.items() if k != "image_url"}
         if blossom_fields:
-            valid_names = {
-                r["name"] for r in
-                supabase.table("blossoms").select("name").in_("name", list(blossom_fields.values())).execute().data
-            }
+            valid_names = {r["name"] for r in supabase.table("blossoms").select("name").in_("name", list(blossom_fields.values())).execute().data}
             invalid = [v for v in blossom_fields.values() if v not in valid_names]
             if invalid:
-                await interaction.response.send_message(
-                    f"❌ These blossoms aren't in the database: {', '.join(invalid)}", ephemeral=True
-                )
+                await interaction.response.send_message(f"❌ These blossoms aren't in the database: {', '.join(invalid)}", ephemeral=True)
                 return
         supabase.table("vases").update(updates).eq("name", name).execute()
         changed.extend(updates.keys())
 
     if not changed:
-        await interaction.response.send_message(
-            "❌ You didn't provide any fields to update.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ You didn't provide any fields to update.", ephemeral=True)
         return
-
-    await interaction.response.send_message(
-        f"✅ **{name}** updated! Fields changed: {', '.join(changed)}", ephemeral=True
-    )
+    await interaction.response.send_message(f"✅ **{name}** updated! Fields changed: {', '.join(changed)}", ephemeral=True)
 
 
 @tree.command(name="markdone", description="[Admin] Mark a florist as done for this week's competition")
@@ -983,13 +852,9 @@ async def mark_done(interaction: discord.Interaction, gamename: str):
         return
     res = supabase.table("players").update({"done": True}).eq("gamename", gamename).execute()
     if res.data:
-        await interaction.response.send_message(
-            f"✅ **{gamename}** has been marked as done for this week.", ephemeral=True
-        )
+        await interaction.response.send_message(f"✅ **{gamename}** has been marked as done for this week.", ephemeral=True)
     else:
-        await interaction.response.send_message(
-            f"❌ No florist named **{gamename}** was found.", ephemeral=True
-        )
+        await interaction.response.send_message(f"❌ No florist named **{gamename}** was found.", ephemeral=True)
 
 
 @tree.command(name="cleardone", description="[Admin] Remove all done markers from all florists")
@@ -998,34 +863,21 @@ async def clear_done(interaction: discord.Interaction):
         await interaction.response.send_message("🚫 Only admins can clear done markers.", ephemeral=True)
         return
     supabase.table("players").update({"done": False}).eq("done", True).execute()
-    await interaction.response.send_message(
-        "✅ All done markers have been cleared.", ephemeral=True
-    )
+    await interaction.response.send_message("✅ All done markers have been cleared.", ephemeral=True)
 
 
 @tree.command(name="addnotice", description="[Admin] Add a notice for a florist on the notice board")
-@app_commands.describe(
-    gamename="The florist's in-game name",
-    notice="The notice to display (max 200 characters)",
-)
+@app_commands.describe(gamename="The florist's in-game name", notice="The notice to display (max 200 characters)")
 @app_commands.autocomplete(gamename=florist_autocomplete)
 async def add_notice(interaction: discord.Interaction, gamename: str, notice: str):
     if not is_admin(interaction):
         await interaction.response.send_message("🚫 Only admins can add notices.", ephemeral=True)
         return
     if len(notice) > 200:
-        await interaction.response.send_message(
-            f"❌ Notice is too long ({len(notice)} characters). Maximum is 200.", ephemeral=True
-        )
+        await interaction.response.send_message(f"❌ Notice is too long ({len(notice)} characters). Maximum is 200.", ephemeral=True)
         return
-    # Upsert — replace existing notice if one already exists for this florist
-    supabase.table("notices").upsert(
-        {"gamename": gamename, "notice": notice},
-        on_conflict="gamename"
-    ).execute()
-    await interaction.response.send_message(
-        f"📋 Notice added for **{gamename}**.", ephemeral=True
-    )
+    supabase.table("notices").upsert({"gamename": gamename, "notice": notice}, on_conflict="gamename").execute()
+    await interaction.response.send_message(f"📋 Notice added for **{gamename}**.", ephemeral=True)
 
 
 @tree.command(name="removenotice", description="[Admin] Remove a florist's notice from the notice board")
@@ -1037,13 +889,9 @@ async def remove_notice(interaction: discord.Interaction, gamename: str):
         return
     res = supabase.table("notices").delete().eq("gamename", gamename).execute()
     if res.data:
-        await interaction.response.send_message(
-            f"📋 Notice for **{gamename}** has been removed.", ephemeral=True
-        )
+        await interaction.response.send_message(f"📋 Notice for **{gamename}** has been removed.", ephemeral=True)
     else:
-        await interaction.response.send_message(
-            f"❌ No notice found for **{gamename}**.", ephemeral=True
-        )
+        await interaction.response.send_message(f"❌ No notice found for **{gamename}**.", ephemeral=True)
 
 
 @tree.command(name="whitelist", description="[Admin] Generate the optimal blossom keep list for a competition")
@@ -1058,8 +906,7 @@ async def whitelist(interaction: discord.Interaction, sort: str = "tier"):
         return
     await interaction.response.defer(ephemeral=True)
 
-    # Exclude florists marked as done
-    all_players = supabase.table("players").select("gamename, done").execute().data
+    all_players  = supabase.table("players").select("gamename, done").execute().data
     done_players = {p["gamename"] for p in all_players if p.get("done")}
     active_players = {p["gamename"] for p in all_players if not p.get("done")}
 
@@ -1067,12 +914,7 @@ async def whitelist(interaction: discord.Interaction, sort: str = "tier"):
         await interaction.followup.send("❌ All florists are marked as done.", ephemeral=True)
         return
 
-    ownership = (
-        supabase.table("ownership")
-        .select("gamename, blossom")
-        .in_("gamename", list(active_players))
-        .execute()
-    )
+    ownership = supabase.table("ownership").select("gamename, blossom").in_("gamename", list(active_players)).execute()
     if not ownership.data:
         await interaction.followup.send("❌ No ownership data found for active florists.", ephemeral=True)
         return
@@ -1087,10 +929,7 @@ async def whitelist(interaction: discord.Interaction, sort: str = "tier"):
     for row in ownership.data:
         b = blossom_details.get(row["blossom"], {})
         pts = b.get("points")
-        if pts not in POINT_TIERS:
-            continue
-        # Skip Green (Ordinary) rarity — everyone has them, no need to whitelist
-        if b.get("rarity") == "Green":
+        if pts not in POINT_TIERS or b.get("rarity") == "Green":
             continue
         member_tiers.setdefault(row["gamename"], {}).setdefault(pts, []).append(row["blossom"])
 
@@ -1113,37 +952,21 @@ async def whitelist(interaction: discord.Interaction, sort: str = "tier"):
         await interaction.followup.send("❌ No blossoms qualify for the whitelist.", ephemeral=True)
         return
 
-    kept = (
-        supabase.table("blossoms")
-        .select("name, points, rarity")
-        .in_("name", list(keep))
-        .execute()
-        .data
-    )
-
+    kept = supabase.table("blossoms").select("name, points, rarity").in_("name", list(keep)).execute().data
     if sort == "tier":
         kept.sort(key=lambda b: (-b["points"], b["name"]))
     else:
         kept.sort(key=lambda b: b["name"])
 
-    lines = []
-    for b in kept:
-        ico = rarity_icon(b["rarity"]) if b.get("rarity") else ""
-        lines.append(f"{ico} **{b['name']}** — {b['points']} pts")
-
-    description = "\n".join(lines)
-    if len(description) > 3800:
-        description = description[:3800] + "\n…(list truncated)"
+    lines = build_whitelist_lines(kept)
 
     sort_label = "by tier (highest first)" if sort == "tier" else "alphabetically"
-    embed = discord.Embed(
-        title="🌺 Competition Whitelist",
-        description=(
-            f"Sorted {sort_label} · **{len(kept)} blossom(s)** "
-            f"across **{len(member_tiers)} active florist(s)**\n\u200b\n" + description
-        ),
-        color=PINK,
-    )
+    title      = "🌺 Competition Whitelist"
+    footer     = f"Sorted {sort_label} · {len(kept)} blossom(s) · {len(member_tiers)} active florist(s)"
+
+    # Send paginated — then append done list as a follow-up if needed
+    view  = PaginatedView(lines, title, footer, ephemeral=True)
+    embed = view._build_embed()
 
     if done_players:
         embed.add_field(
@@ -1152,8 +975,7 @@ async def whitelist(interaction: discord.Interaction, sort: str = "tier"):
             inline=False,
         )
 
-    embed.set_footer(text="Any blossom not listed here is safe to remove from the competition.")
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
