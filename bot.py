@@ -61,7 +61,6 @@ tree    = app_commands.CommandTree(client)
 @client.event
 async def on_ready():
     MY_GUILD = discord.Object(id=int(os.environ["GUILD_ID"]))
-    tree.copy_global_to(guild=MY_GUILD)
     await tree.sync(guild=MY_GUILD)
     print(f"Logged in as {client.user} — slash commands synced!")
     client.loop.create_task(weekly_cleardone())
