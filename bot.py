@@ -63,6 +63,8 @@ async def on_ready():
     MY_GUILD = discord.Object(id=int(os.environ["GUILD_ID"]))
     tree.copy_global_to(guild=MY_GUILD)
     await tree.sync(guild=MY_GUILD)
+    # Clear any leftover global commands (run once, then this line can be removed)
+    await tree.sync()
     print(f"Logged in as {client.user} — slash commands synced!")
     client.loop.create_task(weekly_cleardone())
 
@@ -373,9 +375,11 @@ async def set_bonus(interaction: discord.Interaction, gamename: str, blossom: st
 @app_commands.describe(name="The blossom to look up")
 @app_commands.autocomplete(name=blossom_autocomplete)
 async def blossom_info(interaction: discord.Interaction, name: str):
+    await interaction.response.defer()
+
     bl = supabase.table("blossoms").select("*").eq("name", name).execute()
     if not bl.data:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"❌ No blossom named **{name}** found.", ephemeral=True
         )
         return
@@ -392,7 +396,6 @@ async def blossom_info(interaction: discord.Interaction, name: str):
     if b.get("thumbnail_url"):
         embed.set_thumbnail(url=b["thumbnail_url"])
 
-    # Dynamically look up which vases contain this blossom
     all_vases = (
         supabase.table("vases")
         .select("name, " + ", ".join(VASE_SLOTS))
@@ -408,7 +411,6 @@ async def blossom_info(interaction: discord.Interaction, name: str):
         inline=False,
     )
 
-    # List florists who own this blossom
     owners = supabase.table("ownership").select("gamename, bonus").eq("blossom", name).execute()
     if owners.data:
         lines = []
@@ -428,7 +430,7 @@ async def blossom_info(interaction: discord.Interaction, name: str):
     if b.get("image_url"):
         embed.set_image(url=b["image_url"])
 
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 
 @tree.command(name="myhoard", description="See all blossoms in a florist's hoard")
@@ -761,7 +763,8 @@ async def update_blossom(
 
     changed = []
 
-    # Handle rename — update ownership and vases tables too
+    # Handle rename — must update blossoms first due to foreign key constraints,
+    # then update ownership and vases to match
     if new_name is not None:
         new_name = new_name.strip()
         if supabase.table("blossoms").select("id").eq("name", new_name).execute().data:
@@ -769,11 +772,10 @@ async def update_blossom(
                 f"❌ A blossom named **{new_name}** already exists.", ephemeral=True
             )
             return
+        supabase.table("blossoms").update({"name": new_name}).eq("name", name).execute()
         supabase.table("ownership").update({"blossom": new_name}).eq("blossom", name).execute()
-        # Update all vase slots that reference this blossom
         for slot in VASE_SLOTS:
             supabase.table("vases").update({slot: new_name}).eq(slot, name).execute()
-        supabase.table("blossoms").update({"name": new_name}).eq("name", name).execute()
         changed.append("name")
         name = new_name
 
