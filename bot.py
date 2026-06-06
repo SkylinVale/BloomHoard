@@ -63,8 +63,6 @@ async def on_ready():
     MY_GUILD = discord.Object(id=int(os.environ["GUILD_ID"]))
     tree.copy_global_to(guild=MY_GUILD)
     await tree.sync(guild=MY_GUILD)
-    # Clear any leftover global commands (run once, then this line can be removed)
-    await tree.sync()
     print(f"Logged in as {client.user} — slash commands synced!")
     client.loop.create_task(weekly_cleardone())
 
@@ -763,8 +761,7 @@ async def update_blossom(
 
     changed = []
 
-    # Handle rename — must update blossoms first due to foreign key constraints,
-    # then update ownership and vases to match
+    # Handle rename — ON UPDATE CASCADE automatically updates ownership and vases
     if new_name is not None:
         new_name = new_name.strip()
         if supabase.table("blossoms").select("id").eq("name", new_name).execute().data:
@@ -773,7 +770,6 @@ async def update_blossom(
             )
             return
         supabase.table("blossoms").update({"name": new_name}).eq("name", name).execute()
-        supabase.table("ownership").update({"blossom": new_name}).eq("blossom", name).execute()
         for slot in VASE_SLOTS:
             supabase.table("vases").update({slot: new_name}).eq(slot, name).execute()
         changed.append("name")
