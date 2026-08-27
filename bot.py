@@ -493,7 +493,56 @@ async def my_hoard(interaction: discord.Interaction, gamename: str):
         footer_total=f"{len(lines)} blossom(s) in hoard",
     )
 
+@tree.command(name="floristlist", description="List all registered florists and the number of blossoms they own")
+async def florist_list(interaction: discord.Interaction):
+    await interaction.response.defer()
 
+    players = (
+        supabase.table("players")
+        .select("gamename")
+        .order("gamename")
+        .execute()
+    )
+
+    if not players.data:
+        await interaction.followup.send("🌱 No florists are currently registered.")
+        return
+
+    lines = []
+
+    for player in players.data:
+        gamename = player["gamename"]
+
+        ownership_count = (
+            supabase.table("ownership")
+            .select("id", count="exact", head=True)
+            .eq("gamename", gamename)
+            .execute()
+        )
+
+        count = ownership_count.count or 0
+        lines.append(f"🌿 **{gamename}** — {count} blossom(s)")
+
+    total_florists = len(lines)
+    total_blossoms = sum(
+        int(line.rsplit("—", 1)[1].strip().split()[0])
+        for line in lines
+    )
+
+    description = "\n".join(lines)
+
+    embed = discord.Embed(
+        title="🌸 Tintaglia Florists",
+        description=description,
+        color=PINK,
+    )
+
+    embed.set_footer(
+        text=f"{total_florists} florist(s) • {total_blossoms} blossoms owned"
+    )
+
+    await interaction.followup.send(embed=embed)
+    
 @tree.command(name="keyhoard", description="Show only the blossoms from a florist's hoard that count toward the competition whitelist")
 @app_commands.describe(gamename="The florist's in-game name")
 @app_commands.autocomplete(gamename=florist_autocomplete)
