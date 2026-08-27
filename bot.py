@@ -508,15 +508,28 @@ async def florist_list(interaction: discord.Interaction):
         await interaction.followup.send("🌱 No florists are currently registered.")
         return
 
-    ownership = (
-        supabase.table("ownership")
-        .select("gamename")
-        .execute()
-    )
+    ownership_rows = []
+    start = 0
+    batch_size = 1000
+
+    while True:
+        batch = (
+            supabase.table("ownership")
+            .select("gamename")
+            .range(start, start + batch_size - 1)
+            .execute()
+        )
+
+        ownership_rows.extend(batch.data or [])
+
+        if len(batch.data or []) < batch_size:
+            break
+
+        start += batch_size
 
     ownership_counts = {}
 
-    for record in ownership.data or []:
+    for record in ownership_rows:
         gamename = record["gamename"]
         ownership_counts[gamename] = ownership_counts.get(gamename, 0) + 1
 
