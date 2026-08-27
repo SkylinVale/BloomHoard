@@ -508,20 +508,24 @@ async def florist_list(interaction: discord.Interaction):
         await interaction.followup.send("🌱 No florists are currently registered.")
         return
 
-    lines = []
+ownership = (
+    supabase.table("ownership")
+    .select("gamename")
+    .execute()
+)
 
-    for player in players.data:
-        gamename = player["gamename"]
+ownership_counts = {}
 
-        ownership_count = (
-            supabase.table("ownership")
-            .select("id", count="exact")
-            .eq("gamename", gamename)
-            .execute()
-        )
+for record in ownership.data or []:
+    gamename = record["gamename"]
+    ownership_counts[gamename] = ownership_counts.get(gamename, 0) + 1
 
-        count = ownership_count.count or 0
-        lines.append(f"🌿 **{gamename}** — {count} blossom(s)")
+lines = []
+
+for player in players.data:
+    gamename = player["gamename"]
+    count = ownership_counts.get(gamename, 0)
+    lines.append(f"🌿 **{gamename}** — {count} blossom(s)")
 
     total_florists = len(lines)
     total_blossoms = sum(
