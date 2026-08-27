@@ -515,7 +515,7 @@ async def florist_list(interaction: discord.Interaction):
 
         ownership_count = (
             supabase.table("ownership")
-            .select("id", count="exact", head=True)
+            .select("id", count="exact")
             .eq("gamename", gamename)
             .execute()
         )
