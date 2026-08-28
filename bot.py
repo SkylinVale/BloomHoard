@@ -382,7 +382,8 @@ async def update_florist(
         return
 
     await interaction.response.send_message(
-        f"🌿 Florist name corrected!\n**{gamename}** → **{new_name}**\n"
+        f"🌿 Florist name corrected!\n"
+        f"**{gamename}** → **{new_name}**\n"
         f"🌱 Their blossom ownership has been preserved.",
         ephemeral=True,
     )
