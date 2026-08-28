@@ -660,12 +660,19 @@ async def key_hoard(interaction: discord.Interaction, gamename: str):
             tiers.setdefault(pts, []).append(row["blossom"])
 
     member_keep: set[str] = set()
-    for tier in ALWAYS_INCLUDE:
+
+    # Always protect the two highest-value tiers.
+    # 30-point tasks are rare, so 28-point flowers remain protected
+    # even when the florist already has 10+ flowers at 30 points.
+    for tier in (30, 28):
         if tier in tiers:
             member_keep.update(tiers[tier])
-    for tier in POINT_TIERS:
-        if tier in ALWAYS_INCLUDE:
-            continue
+
+    # If the protected tiers don't provide enough options, work downward
+    # through the remaining point tiers. Once a tier is needed, include
+    # the ENTIRE tier so that no potentially useful flower is arbitrarily
+    # excluded.
+    for tier in (25, 23, 21, 14, 9):
         if len(member_keep) >= MIN_FLOWERS:
             break
         if tier in tiers:
