@@ -318,6 +318,74 @@ async def add_florist(interaction: discord.Interaction, gamename: str):
     supabase.table("players").insert({"gamename": gamename, "done": False}).execute()
     await interaction.response.send_message(f"🌱 **{gamename}** has been added as a florist!", ephemeral=True)
 
+@tree.command(name="updateflorist", description="[Admin] Correct a florist's in-game name")
+@app_commands.describe(
+    gamename="The florist's current in-game name",
+    new_name="The corrected in-game name",
+)
+@app_commands.autocomplete(gamename=florist_autocomplete)
+async def update_florist(
+    interaction: discord.Interaction,
+    gamename: str,
+    new_name: str,
+):
+    if not is_admin(interaction):
+        await interaction.response.send_message(
+            "🚫 Only admins can update florist names.",
+            ephemeral=True,
+        )
+        return
+
+    gamename = gamename.strip()
+    new_name = new_name.strip()
+
+    if not supabase.table("players").select("id").eq("gamename", gamename).execute().data:
+        await interaction.response.send_message(
+            f"❌ No florist named **{gamename}** was found.",
+            ephemeral=True,
+        )
+        return
+
+    if not new_name:
+        await interaction.response.send_message(
+            "❌ The new florist name cannot be blank.",
+            ephemeral=True,
+        )
+        return
+
+    if new_name == gamename:
+        await interaction.response.send_message(
+            "❌ The new name is the same as the current name.",
+            ephemeral=True,
+        )
+        return
+
+    if supabase.table("players").select("id").eq("gamename", new_name).execute().data:
+        await interaction.response.send_message(
+            f"❌ A florist named **{new_name}** is already registered.",
+            ephemeral=True,
+        )
+        return
+
+    result = (
+        supabase.table("players")
+        .update({"gamename": new_name})
+        .eq("gamename", gamename)
+        .execute()
+    )
+
+    if not result.data:
+        await interaction.response.send_message(
+            f"❌ Something went wrong while updating **{gamename}**.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        f"🌿 Florist name corrected!\n**{gamename}** → **{new_name}**\n"
+        f"🌱 Their blossom ownership has been preserved.",
+        ephemeral=True,
+    )
 
 @tree.command(name="removeflorist", description="Remove a florist and all their blossoms")
 @app_commands.describe(gamename="The florist's in-game name")
