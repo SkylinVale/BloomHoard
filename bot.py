@@ -262,7 +262,7 @@ class PaginatedView(discord.ui.View):
 
         await interaction.response.defer()
 
-        result = await self.refresh_callback()
+        result = await asyncio.to_thread(self.refresh_callback)
 
         if not result:
             return
