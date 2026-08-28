@@ -213,9 +213,15 @@ class PaginatedView(discord.ui.View):
             self.add_item(select)
 
     async def _go_to(self, interaction: discord.Interaction, page: int):
+        await interaction.response.defer()
+    
         self.page = page
         self._update_components()
-        await interaction.response.edit_message(embed=self._build_embed(), view=self)
+    
+        await interaction.edit_original_response(
+            embed=self._build_embed(),
+            view=self
+        )
 
     async def _first(self, interaction: discord.Interaction):
         await self._go_to(interaction, 0)
@@ -1036,11 +1042,15 @@ async def remove_notice(interaction: discord.Interaction, gamename: str):
     app_commands.Choice(name="Alphabetically — A to Z",                           value="alpha"),
 ])
 async def whitelist(interaction: discord.Interaction, sort: str = "alpha"):
-    if not is_admin(interaction):
-        await interaction.response.send_message("🚫 Only admins can run the whitelist.", ephemeral=True)
-        return
     await interaction.response.defer(ephemeral=True)
 
+    if not is_admin(interaction):
+        await interaction.followup.send(
+            "🚫 Only admins can run the whitelist.",
+            ephemeral=True
+        )
+        return
+        
     all_players  = supabase.table("players").select("gamename, done").execute().data
     done_players = {p["gamename"] for p in all_players if p.get("done")}
     active_players = {p["gamename"] for p in all_players if not p.get("done")}
