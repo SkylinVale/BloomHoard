@@ -1239,7 +1239,7 @@ async def whitelist(interaction: discord.Interaction, sort: str = "alpha"):
         return lines, title, footer, done_players
 
     # Build the initial whitelist
-    result = await build_whitelist()
+    result = await asyncio.to_thread(build_whitelist)
 
     if not result:
         await interaction.followup.send(
