@@ -142,12 +142,14 @@ def build_whitelist_lines(kept: list) -> list[str]:
 # ════════════════════════════════════════════════════════════════════════════════
 
 class PaginatedView(discord.ui.View):
-    def __init__(self, lines: list[str], title: str, footer_total: str, ephemeral: bool = False):
+    def __init__(self, lines: list[str], title: str, footer_total: str, ephemeral: bool = False, refresh_callback=None):
         super().__init__(timeout=None)
-        self.lines         = lines
-        self.title         = title
-        self.footer_total  = footer_total
-        self.ephemeral     = ephemeral
+        self.lines           = lines
+        self.title           = title
+        self.footer_total    = footer_total
+        self.ephemeral       = ephemeral
+        self.refresh_callback = refresh_callback
+        self.done_players = []
         self.page          = 0
         self.total_pages   = max(1, (len(lines) + PAGE_SIZE - 1) // PAGE_SIZE)
         self._update_components()
@@ -162,6 +164,14 @@ class PaginatedView(discord.ui.View):
             description="\n".join(self._page_lines()),
             color=PINK,
         )
+
+        if hasattr(self, "done_players") and self.done_players:
+            embed.add_field(
+                name="✅ Florists marked as done",
+                value="\n".join(f"• {p}" for p in sorted(self.done_players)),
+                inline=False,
+            )
+
         embed.set_footer(text=f"{self.footer_total} · Page {self.page + 1}/{self.total_pages}")
         return embed
 
@@ -175,16 +185,26 @@ class PaginatedView(discord.ui.View):
         nxt    = discord.ui.Button(emoji="▶️", style=discord.ButtonStyle.grey,  custom_id="next",   disabled=self.page >= self.total_pages - 1)
         last   = discord.ui.Button(emoji="⏭️", style=discord.ButtonStyle.grey,  custom_id="last",   disabled=self.page >= self.total_pages - 1)
 
-        first.callback  = self._first
-        prev.callback   = self._prev
-        nxt.callback    = self._next
-        last.callback   = self._last
+        refresh = discord.ui.Button(
+            emoji="🔄",
+            style=discord.ButtonStyle.grey,
+            custom_id="refresh",
+        )
+        
+        first.callback   = self._first
+        prev.callback    = self._prev
+        nxt.callback     = self._next
+        last.callback    = self._last
+        refresh.callback = self._refresh
 
         self.add_item(first)
         self.add_item(prev)
         self.add_item(page_b)
         self.add_item(nxt)
         self.add_item(last)
+
+        if self.refresh_callback:
+            self.add_item(refresh)
 
         # Select menu — blossom names on current page (strip formatting)
         page_lines = self._page_lines()
@@ -235,6 +255,29 @@ class PaginatedView(discord.ui.View):
     async def _last(self, interaction: discord.Interaction):
         await self._go_to(interaction, self.total_pages - 1)
 
+    async def _refresh(self, interaction: discord.Interaction):
+        if not self.refresh_callback:
+            return
+
+        await interaction.response.defer()
+
+        result = await self.refresh_callback()
+
+        if not result:
+            return
+
+        self.lines, self.title, self.footer_total, self.done_players = result
+
+        self.total_pages = max(1, (len(self.lines) + PAGE_SIZE - 1) // PAGE_SIZE)
+        self.page = min(self.page, self.total_pages - 1)
+
+        self._update_components()
+
+        await interaction.edit_original_response(
+            embed=self._build_embed(),
+            view=self,
+        )
+        
     async def _select_blossom(self, interaction: discord.Interaction):
         name = interaction.data["values"][0]
         bl = supabase.table("blossoms").select("*").eq("name", name).execute()
@@ -285,10 +328,27 @@ class PaginatedView(discord.ui.View):
             item.disabled = True
 
 
-async def send_paginated(interaction, lines: list[str], title: str, footer_total: str, ephemeral: bool = False):
-    view  = PaginatedView(lines, title, footer_total, ephemeral)
+async def send_paginated(
+    interaction,
+    lines: list[str],
+    title: str,
+    footer_total: str,
+    ephemeral: bool = False,
+    refresh_callback=None,
+):
+    view = PaginatedView(
+        lines,
+        title,
+        footer_total,
+        ephemeral,
+        refresh_callback,
+    )
     embed = view._build_embed()
-    await interaction.followup.send(embed=embed, view=view, ephemeral=ephemeral)
+    await interaction.followup.send(
+        embed=embed,
+        view=view,
+        ephemeral=ephemeral,
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1057,77 +1117,157 @@ async def whitelist(interaction: discord.Interaction, sort: str = "alpha"):
             ephemeral=True
         )
         return
-        
-    all_players  = supabase.table("players").select("gamename, done").execute().data
-    done_players = {p["gamename"] for p in all_players if p.get("done")}
-    active_players = {p["gamename"] for p in all_players if not p.get("done")}
 
-    if not active_players:
-        await interaction.followup.send("❌ All florists are marked as done.", ephemeral=True)
-        return
-
-    ownership = supabase.table("ownership").select("gamename, blossom").in_("gamename", list(active_players)).execute()
-    if not ownership.data:
-        await interaction.followup.send("❌ No ownership data found for active florists.", ephemeral=True)
-        return
-
-    blossom_names = list({row["blossom"] for row in ownership.data})
-    blossom_details = {
-        b["name"]: b for b in
-        supabase.table("blossoms").select("name, points, rarity").in_("name", blossom_names).execute().data
-    }
-
-    member_tiers: dict[str, dict[int, list[str]]] = {}
-    for row in ownership.data:
-        b = blossom_details.get(row["blossom"], {})
-        pts = b.get("points")
-        if pts not in POINT_TIERS or b.get("rarity") == "Green":
-            continue
-        member_tiers.setdefault(row["gamename"], {}).setdefault(pts, []).append(row["blossom"])
-
-    keep: set[str] = set()
-    for tiers in member_tiers.values():
-        member_keep: set[str] = set()
-        for tier in ALWAYS_INCLUDE:
-            if tier in tiers:
-                member_keep.update(tiers[tier])
-        for tier in POINT_TIERS:
-            if tier in ALWAYS_INCLUDE:
-                continue
-            if len(member_keep) >= MIN_FLOWERS:
-                break
-            if tier in tiers:
-                member_keep.update(tiers[tier])
-        keep.update(member_keep)
-
-    if not keep:
-        await interaction.followup.send("❌ No blossoms qualify for the whitelist.", ephemeral=True)
-        return
-
-    kept = supabase.table("blossoms").select("name, points, rarity").in_("name", list(keep)).execute().data
-    if sort == "tier":
-        kept.sort(key=lambda b: (-b["points"], b["name"]))
-    else:
-        kept.sort(key=lambda b: b["name"])
-
-    lines = build_whitelist_lines(kept)
-
-    sort_label = "by tier (highest first)" if sort == "tier" else "alphabetically"
-    title      = "🌺 Competition Whitelist"
-    footer     = f"Sorted {sort_label} · {len(kept)} blossom(s) · {len(member_tiers)} active florist(s)"
-
-    # Send paginated — then append done list as a follow-up if needed
-    view  = PaginatedView(lines, title, footer, ephemeral=True)
-    embed = view._build_embed()
-
-    if done_players:
-        embed.add_field(
-            name="✅ Florists marked as done",
-            value="\n".join(f"• {p}" for p in sorted(done_players)),
-            inline=False,
+    async def build_whitelist():
+        all_players = (
+            supabase.table("players")
+            .select("gamename, done")
+            .execute()
+            .data
         )
 
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        done_players = {
+            p["gamename"]
+            for p in all_players
+            if p.get("done")
+        }
+
+        active_players = {
+            p["gamename"]
+            for p in all_players
+            if not p.get("done")
+        }
+
+        if not active_players:
+            return None
+
+        ownership = (
+            supabase.table("ownership")
+            .select("gamename, blossom")
+            .in_("gamename", list(active_players))
+            .execute()
+        )
+
+        if not ownership.data:
+            return None
+
+        blossom_names = list({
+            row["blossom"]
+            for row in ownership.data
+        })
+
+        blossom_details = {
+            b["name"]: b
+            for b in supabase.table("blossoms")
+            .select("name, points, rarity")
+            .in_("name", blossom_names)
+            .execute()
+            .data
+        }
+
+        member_tiers: dict[str, dict[int, list[str]]] = {}
+
+        for row in ownership.data:
+            b = blossom_details.get(row["blossom"], {})
+            pts = b.get("points")
+
+            if pts not in POINT_TIERS or b.get("rarity") == "Green":
+                continue
+
+            member_tiers \
+                .setdefault(row["gamename"], {}) \
+                .setdefault(pts, []) \
+                .append(row["blossom"])
+
+        keep: set[str] = set()
+
+        for tiers in member_tiers.values():
+            member_keep: set[str] = set()
+
+            # Always protect the protected tiers (currently 30 and 28)
+            for tier in ALWAYS_INCLUDE:
+                if tier in tiers:
+                    member_keep.update(tiers[tier])
+
+            # Then work downward until this florist has enough choices.
+            # Once a tier is needed, include the ENTIRE tier.
+            for tier in POINT_TIERS:
+                if tier in ALWAYS_INCLUDE:
+                    continue
+
+                if len(member_keep) >= MIN_FLOWERS:
+                    break
+
+                if tier in tiers:
+                    member_keep.update(tiers[tier])
+
+            keep.update(member_keep)
+
+        if not keep:
+            return None
+
+        kept = (
+            supabase.table("blossoms")
+            .select("name, points, rarity")
+            .in_("name", list(keep))
+            .execute()
+            .data
+        )
+
+        if sort == "tier":
+            kept.sort(key=lambda b: (-b["points"], b["name"]))
+        else:
+            kept.sort(key=lambda b: b["name"])
+
+        lines = build_whitelist_lines(kept)
+
+        sort_label = (
+            "by tier (highest first)"
+            if sort == "tier"
+            else "alphabetically"
+        )
+
+        title = "🌺 Competition Whitelist"
+
+        footer = (
+            f"Sorted {sort_label} · "
+            f"{len(kept)} blossom(s) · "
+            f"{len(member_tiers)} active florist(s)"
+        )
+
+        return lines, title, footer, done_players
+
+    # Build the initial whitelist
+    result = await build_whitelist()
+
+    if not result:
+        await interaction.followup.send(
+            "❌ No blossoms qualify for the whitelist.",
+            ephemeral=True
+        )
+        return
+
+    lines, title, footer, done_players = result
+
+    # Give ONLY /whitelist a refresh callback
+    view = PaginatedView(
+        lines,
+        title,
+        footer,
+        ephemeral=True,
+        refresh_callback=build_whitelist,
+    )
+
+    # Preserve the "Florists marked as done" field
+    view.done_players = done_players
+
+    embed = view._build_embed()
+
+    await interaction.followup.send(
+        embed=embed,
+        view=view,
+        ephemeral=True
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════════
