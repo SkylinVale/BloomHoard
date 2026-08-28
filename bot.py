@@ -1035,7 +1035,7 @@ async def remove_notice(interaction: discord.Interaction, gamename: str):
     app_commands.Choice(name="By tier — highest first, alphabetical within tier", value="tier"),
     app_commands.Choice(name="Alphabetically — A to Z",                           value="alpha"),
 ])
-async def whitelist(interaction: discord.Interaction, sort: str = "tier"):
+async def whitelist(interaction: discord.Interaction, sort: str = "alpha"):
     if not is_admin(interaction):
         await interaction.response.send_message("🚫 Only admins can run the whitelist.", ephemeral=True)
         return
