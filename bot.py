@@ -143,7 +143,7 @@ def build_whitelist_lines(kept: list) -> list[str]:
 
 class PaginatedView(discord.ui.View):
     def __init__(self, lines: list[str], title: str, footer_total: str, ephemeral: bool = False):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)
         self.lines         = lines
         self.title         = title
         self.footer_total  = footer_total
