@@ -1119,7 +1119,7 @@ async def whitelist(interaction: discord.Interaction, sort: str = "alpha"):
         )
         return
 
-    async def build_whitelist():
+    def build_whitelist():
         all_players = (
             supabase.table("players")
             .select("gamename, done")
