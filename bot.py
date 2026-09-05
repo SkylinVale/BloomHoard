@@ -89,7 +89,49 @@ def is_admin(interaction: discord.Interaction) -> bool:
         return True
     return any(role.name in STAFF_ROLES for role in interaction.user.roles)
 
+def log_change(
+    interaction: discord.Interaction,
+    category: str,
+    change_type: str,
+    name: str,
+    description: str,
+    old_name: str | None = None,
+):
+    supabase.table("changelog").insert({
+        "category": category,
+        "change_type": change_type,
+        "name": name,
+        "old_name": old_name,
+        "description": description,
+        "created_by": interaction.user.name,
+    }).execute()
 
+def log_bot_change(
+    interaction: discord.Interaction,
+    description: str,
+):
+    cutoff = datetime.now(timezone.utc) - timedelta(days=42)
+
+    existing = (
+        supabase.table("changelog")
+        .select("id")
+        .eq("category", "bot")
+        .eq("description", description)
+        .gte("created_at", cutoff.isoformat())
+        .execute()
+    )
+
+    if existing.data:
+        return
+
+    log_change(
+        interaction,
+        "bot",
+        "updated",
+        "BlossomHoard",
+        description,
+    )
+    
 def get_config_icon(key: str) -> str | None:
     res = supabase.table("config").select("icon_url").eq("key", key).execute()
     return res.data[0]["icon_url"] if res.data else None
@@ -843,6 +885,51 @@ async def blossom_help(interaction: discord.Interaction):
     embed.set_footer(text="All name fields support autocomplete — start typing to see options!")
     await interaction.response.send_message(embed=embed)
 
+@tree.command(name="changelog", description="View recent changes to flowers, vases, and the bot")
+async def changelog(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=42)
+
+    result = (
+        supabase.table("changelog")
+        .select("created_at, category, change_type, name, old_name, description")
+        .gte("created_at", cutoff.isoformat())
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    if not result.data:
+        await interaction.followup.send(
+            "📜 No changes have been recorded in the last 6 weeks.",
+            ephemeral=True
+        )
+        return
+
+    # Group changes by calendar day
+    grouped = {}
+
+    for row in result.data:
+        dt = datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
+        day = dt.astimezone(timezone.utc).date()
+        grouped.setdefault(day, []).append(row)
+
+    lines = []
+
+    for day, changes in grouped.items():
+        date_label = day.strftime("%B %-d")
+        lines.append(f"**{date_label}**")
+
+        for change in changes:
+            lines.append(f"• {change['description']}")
+
+    await send_paginated(
+        interaction,
+        lines,
+        "📜 Changelog",
+        "Showing changes from the last 6 weeks",
+        ephemeral=False,
+    )
 
 # ════════════════════════════════════════════════════════════════════════════════
 # ADMIN COMMANDS — admins and staff only
@@ -869,8 +956,28 @@ async def add_blossom(
     if supabase.table("blossoms").select("id").eq("name", name).execute().data:
         await interaction.response.send_message(f"❌ **{name}** already exists in the blossom database.", ephemeral=True)
         return
-    supabase.table("blossoms").insert({"name": name, "rarity": rarity, "points": points, "source": source, "image_url": image_url, "thumbnail_url": thumbnail_url}).execute()
-    await interaction.response.send_message(f"🌸 **{name}** has been added to the blossom database!", ephemeral=True)
+    res = supabase.table("blossoms").insert({
+        "name": name,
+        "rarity": rarity,
+        "points": points,
+        "source": source,
+        "image_url": image_url,
+        "thumbnail_url": thumbnail_url,
+    }).execute()
+
+    if res.data:
+        log_change(
+            interaction,
+            "flower",
+            "added",
+            name,
+            f"Added **{name}**",
+        )
+
+    await interaction.response.send_message(
+        f"🌸 **{name}** has been added to the blossom database!",
+        ephemeral=True
+    )
 
 
 @tree.command(name="updateblossom", description="[Admin] Update any field on an existing blossom")
@@ -892,6 +999,7 @@ async def update_blossom(
         await interaction.response.send_message(f"❌ No blossom named **{name}** was found.", ephemeral=True)
         return
 
+    original_name = name
     changed = []
 
     # Rename — update blossoms first (CASCADE handles ownership), then vase slots manually
@@ -926,7 +1034,26 @@ async def update_blossom(
         await interaction.response.send_message("❌ You didn't provide any fields to update.", ephemeral=True)
         return
 
-    await interaction.response.send_message(f"✅ **{name}** updated! Fields changed: {', '.join(changed)}", ephemeral=True)
+    if original_name != name:
+        if changed == ["name"]:
+            details = f"Renamed **{original_name}** to **{name}**"
+        else:
+            details = f"Renamed **{original_name}** to **{name}**; updated fields: {', '.join(changed)}"
+    else:
+        details = f"Updated **{name}**: {', '.join(changed)}"
+
+    log_change(
+        interaction,
+        "flower",
+        "updated",
+        name,
+        details,
+    )
+
+    await interaction.response.send_message(
+        f"✅ **{name}** updated! Fields changed: {', '.join(changed)}",
+        ephemeral=True
+    )
 
 
 @tree.command(name="removeblossom", description="[Admin] Remove a blossom from the database")
@@ -939,6 +1066,13 @@ async def remove_blossom(interaction: discord.Interaction, name: str):
     supabase.table("ownership").delete().eq("blossom", name).execute()
     res = supabase.table("blossoms").delete().eq("name", name).execute()
     if res.data:
+         log_change(
+            interaction,
+            "flower",
+            "removed",
+            name,
+            f"Removed **{name}**",
+        )
         await interaction.response.send_message(f"🍂 **{name}** has been removed from the database.", ephemeral=True)
     else:
         await interaction.response.send_message(f"❌ No blossom named **{name}** was found.", ephemeral=True)
@@ -978,12 +1112,20 @@ async def add_vase(
     if invalid:
         await interaction.response.send_message(f"❌ These blossoms aren't in the database yet: {', '.join(invalid)}", ephemeral=True)
         return
-    supabase.table("vases").insert({
+    res = supabase.table("vases").insert({
         "name": name, "image_url": image_url,
         "primary_1": primary_1,     "primary_2": primary_2,     "primary_3": primary_3,
         "secondary_1": secondary_1, "secondary_2": secondary_2, "secondary_3": secondary_3,
         "tertiary_1": tertiary_1,   "tertiary_2": tertiary_2,   "tertiary_3": tertiary_3,
     }).execute()
+    if res.data:
+        log_change(
+            interaction,
+            "vase",
+            "added",
+            name,
+            f"Added **{name}**",
+        )
     await interaction.response.send_message(f"🏺 **{name}** has been added to the vase database!", ephemeral=True)
 
 
@@ -1049,7 +1191,19 @@ async def update_vase(
     if not changed:
         await interaction.response.send_message("❌ You didn't provide any fields to update.", ephemeral=True)
         return
-    await interaction.response.send_message(f"✅ **{name}** updated! Fields changed: {', '.join(changed)}", ephemeral=True)
+
+    log_change(
+        interaction,
+        "vase",
+        "updated",
+        name,
+        f"Updated **{name}**: {', '.join(changed)}",
+    )
+
+    await interaction.response.send_message(
+        f"✅ **{name}** updated! Fields changed: {', '.join(changed)}",
+    ephemeral=True
+    )
 
 
 @tree.command(name="markdone", description="[Admin] Mark a florist as done for this week's competition")
@@ -1270,6 +1424,31 @@ async def whitelist(interaction: discord.Interaction, sort: str = "alpha"):
         ephemeral=False
     )
 
+@tree.command(name="logchange", description="[Admin] Record a bot change in the changelog")
+@app_commands.describe(description="Describe the bot change")
+async def logchange(interaction: discord.Interaction, description: str):
+    if not is_admin(interaction):
+        await interaction.response.send_message(
+            "🚫 Only admins can log bot changes.",
+            ephemeral=True
+        )
+        return
+
+    description = description.strip()
+
+    if not description:
+        await interaction.response.send_message(
+            "❌ Please provide a description of the change.",
+            ephemeral=True
+        )
+        return
+
+    log_bot_change(interaction, description)
+
+    await interaction.response.send_message(
+        f"✅ Bot change logged: **{description}**",
+        ephemeral=True
+    )
 
 # ════════════════════════════════════════════════════════════════════════════════
 # RUN
