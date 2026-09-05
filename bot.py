@@ -1249,17 +1249,19 @@ async def update_vase(
 @tree.command(name="linkname", description="Link an in-game name to an existing florist")
 @app_commands.describe(
     florist="The florist from the database",
-    game_identity="The exact in-game name, including server number"
+    server_number="The server number (example: 5 for s5)",
+    game_name="The exact in-game name"
 )
 @app_commands.autocomplete(florist=florist_autocomplete)
 @app_commands.checks.has_permissions(administrator=True)
 async def link_name(
     interaction: discord.Interaction,
     florist: str,
-    game_identity: str
+    server_number: int,
+    game_name: str
 ):
     florist = florist.strip()
-    game_identity = game_identity.strip()
+    game_name = game_name.strip()
 
     # Find the florist
     player = (
@@ -1279,11 +1281,12 @@ async def link_name(
 
     player_id = player[0]["id"]
 
-    # Make sure this game identity isn't already linked
+    # Make sure this server/name combination isn't already linked
     existing = (
         supabase.table("player_game_names")
         .select("id, player_id")
-        .eq("game_identity", game_identity)
+        .eq("server_number", server_number)
+        .eq("game_name", game_name)
         .execute()
         .data
     )
@@ -1291,12 +1294,12 @@ async def link_name(
     if existing:
         if existing[0]["player_id"] == player_id:
             await interaction.response.send_message(
-                f"🌸 **{game_identity}** is already linked to **{florist}**.",
+                f"🔗 **s{server_number}.{game_name}** is already linked to **{florist}**.",
                 ephemeral=True
             )
         else:
             await interaction.response.send_message(
-                f"⚠️ **{game_identity}** is already linked to another florist!",
+                f"⚠️ **s{server_number}.{game_name}** is already linked to another florist!",
                 ephemeral=True
             )
         return
@@ -1304,11 +1307,12 @@ async def link_name(
     # Create the link
     supabase.table("player_game_names").insert({
         "player_id": player_id,
-        "game_identity": game_identity
+        "server_number": server_number,
+        "game_name": game_name
     }).execute()
 
     await interaction.response.send_message(
-        f"🔗 Linked **{game_identity}** → **{florist}**!",
+        f"🔗 Linked **s{server_number}.{game_name}** → **{florist}**!",
         ephemeral=True
     )
 
