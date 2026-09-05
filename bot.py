@@ -893,9 +893,9 @@ async def changelog(interaction: discord.Interaction):
 
     result = (
         supabase.table("changelog")
-        .select("created_at, category, change_type, name, old_name, description")
-        .gte("created_at", cutoff.isoformat())
-        .order("created_at", desc=True)
+        .select("changed_at, category, change_type, name, old_name, description")
+        .gte("changed_at", cutoff.isoformat())
+        .order("changed_at", desc=True)
         .execute()
     )
 
@@ -910,7 +910,7 @@ async def changelog(interaction: discord.Interaction):
     grouped = {}
 
     for row in result.data:
-        dt = datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(row["changed_at"].replace("Z", "+00:00"))
         day = dt.astimezone(timezone.utc).date()
         grouped.setdefault(day, []).append(row)
 
