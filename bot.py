@@ -117,7 +117,7 @@ def log_bot_change(
         .select("id")
         .eq("category", "bot")
         .eq("description", description)
-        .gte("created_at", cutoff.isoformat())
+        .gte("changed_at", cutoff.isoformat())
         .execute()
     )
 
