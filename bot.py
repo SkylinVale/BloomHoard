@@ -1110,7 +1110,7 @@ async def remove_notice(interaction: discord.Interaction, gamename: str):
     app_commands.Choice(name="Alphabetically — A to Z",                           value="alpha"),
 ])
 async def whitelist(interaction: discord.Interaction, sort: str = "alpha"):
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer()
 
     if not is_admin(interaction):
         await interaction.followup.send(
@@ -1267,7 +1267,7 @@ async def whitelist(interaction: discord.Interaction, sort: str = "alpha"):
     await interaction.followup.send(
         embed=embed,
         view=view,
-        ephemeral=True
+        ephemeral=False
     )
 
 
