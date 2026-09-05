@@ -1066,16 +1066,22 @@ async def remove_blossom(interaction: discord.Interaction, name: str):
     supabase.table("ownership").delete().eq("blossom", name).execute()
     res = supabase.table("blossoms").delete().eq("name", name).execute()
     if res.data:
-         log_change(
+        log_change(
             interaction,
             "flower",
             "removed",
             name,
             f"Removed **{name}**",
         )
-        await interaction.response.send_message(f"🍂 **{name}** has been removed from the database.", ephemeral=True)
+        await interaction.response.send_message(
+            f"🍂 **{name}** has been removed from the database.",
+            ephemeral=True
+        )
     else:
-        await interaction.response.send_message(f"❌ No blossom named **{name}** was found.", ephemeral=True)
+        await interaction.response.send_message(
+            f"❌ No blossom named **{name}** was found.",
+            ephemeral=True
+        )
 
 
 @tree.command(name="addvase", description="[Admin] Add a new vase to the database")
