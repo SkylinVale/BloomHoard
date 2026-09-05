@@ -914,20 +914,27 @@ async def changelog(interaction: discord.Interaction):
         day = dt.astimezone(timezone.utc).date()
         grouped.setdefault(day, []).append(row)
 
-    lines = []
+    description_lines = []
 
     for day, changes in grouped.items():
         date_label = day.strftime("%B %-d")
-        lines.append(f"**{date_label}**")
+        description_lines.append(f"**{date_label}**")
 
         for change in changes:
-            lines.append(f"• {change['description']}")
+            description_lines.append(f"• {change['description']}")
 
-    await send_paginated(
-        interaction,
-        lines,
-        "📜 Changelog",
-        "Showing changes from the last 6 weeks",
+        description_lines.append("")
+
+    embed = discord.Embed(
+        title="📜 BlossomHoard Changelog",
+        description="\n".join(description_lines),
+        color=PINK,
+    )
+
+    embed.set_footer(text="Showing changes from the last 6 weeks")
+
+    await interaction.followup.send(
+        embed=embed,
         ephemeral=False,
     )
 
