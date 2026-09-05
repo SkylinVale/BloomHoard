@@ -178,6 +178,34 @@ def build_whitelist_lines(kept: list) -> list[str]:
         lines.append(f"{ico} **{b['name']}** — {b['points']} pts")
     return lines
 
+async def resolve_game_identity(game_identity: str):
+    game_identity = game_identity.strip()
+
+    link = (
+        supabase.table("player_game_names")
+        .select("player_id")
+        .eq("game_identity", game_identity)
+        .execute()
+        .data
+    )
+
+    if not link:
+        return None
+
+    player_id = link[0]["player_id"]
+
+    player = (
+        supabase.table("players")
+        .select("gamename")
+        .eq("id", player_id)
+        .execute()
+        .data
+    )
+
+    if not player:
+        return None
+
+    return player[0]["gamename"]
 
 # ════════════════════════════════════════════════════════════════════════════════
 # PAGINATED VIEW
@@ -1527,6 +1555,26 @@ async def logchange(interaction: discord.Interaction, description: str):
         ephemeral=True
     )
 
+@tree.command(name="resolve", description="Test an in-game name lookup")
+@app_commands.describe(game_identity="The exact in-game name, including server number")
+@app_commands.checks.has_permissions(administrator=True)
+async def resolve(interaction: discord.Interaction, game_identity: str):
+    await interaction.response.defer(ephemeral=True)
+
+    florist = await resolve_game_identity(game_identity)
+
+    if not florist:
+        await interaction.followup.send(
+            f"❌ I couldn't find **{game_identity}** in the linked game names.",
+            ephemeral=True
+        )
+        return
+
+    await interaction.followup.send(
+        f"🔗 **{game_identity}** → **{florist}**",
+        ephemeral=True
+    )
+    
 # ════════════════════════════════════════════════════════════════════════════════
 # RUN
 # ════════════════════════════════════════════════════════════════════════════════
