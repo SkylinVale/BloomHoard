@@ -1218,6 +1218,70 @@ async def update_vase(
     ephemeral=True
     )
 
+@tree.command(name="linkname", description="Link an in-game name to an existing florist")
+@app_commands.describe(
+    florist="The florist from the database",
+    game_identity="The exact in-game name, including server number"
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def link_name(
+    interaction: discord.Interaction,
+    florist: str,
+    game_identity: str
+):
+    florist = florist.strip()
+    game_identity = game_identity.strip()
+
+    # Find the florist
+    player = (
+        supabase.table("players")
+        .select("id, gamename")
+        .eq("gamename", florist)
+        .execute()
+        .data
+    )
+
+    if not player:
+        await interaction.response.send_message(
+            f"❌ I couldn't find **{florist}** in the florist database.",
+            ephemeral=True
+        )
+        return
+
+    player_id = player[0]["id"]
+
+    # Make sure this game identity isn't already linked
+    existing = (
+        supabase.table("player_game_names")
+        .select("id, player_id")
+        .eq("game_identity", game_identity)
+        .execute()
+        .data
+    )
+
+    if existing:
+        if existing[0]["player_id"] == player_id:
+            await interaction.response.send_message(
+                f"🌸 **{game_identity}** is already linked to **{florist}**.",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                f"⚠️ **{game_identity}** is already linked to another florist!",
+                ephemeral=True
+            )
+        return
+
+    # Create the link
+    supabase.table("player_game_names").insert({
+        "player_id": player_id,
+        "game_identity": game_identity
+    }).execute()
+
+    await interaction.response.send_message(
+        f"🔗 Linked **{game_identity}** → **{florist}**!",
+        ephemeral=True
+    )
 
 @tree.command(name="markdone", description="[Admin] Mark a florist as done for this week's competition")
 @app_commands.describe(gamename="The florist to mark as done")
