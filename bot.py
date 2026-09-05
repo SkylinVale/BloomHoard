@@ -178,13 +178,14 @@ def build_whitelist_lines(kept: list) -> list[str]:
         lines.append(f"{ico} **{b['name']}** — {b['points']} pts")
     return lines
 
-async def resolve_game_identity(game_identity: str):
-    game_identity = game_identity.strip()
+async def resolve_game_identity(server_number: int, game_name: str):
+    game_name = game_name.strip()
 
     link = (
         supabase.table("player_game_names")
         .select("player_id")
-        .eq("game_identity", game_identity)
+        .eq("server_number", server_number)
+        .eq("game_name", game_name)
         .execute()
         .data
     )
