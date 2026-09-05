@@ -1251,6 +1251,7 @@ async def update_vase(
     florist="The florist from the database",
     game_identity="The exact in-game name, including server number"
 )
+@app_commands.autocomplete(florist=florist_autocomplete)
 @app_commands.checks.has_permissions(administrator=True)
 async def link_name(
     interaction: discord.Interaction,
