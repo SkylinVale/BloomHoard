@@ -920,7 +920,7 @@ async def changelog(interaction: discord.Interaction):
         date_label = day.strftime("%B %-d")
         description_lines.append(f"**{date_label}**")
 
-        for change in changes:
+        for change in reversed(changes):
             description_lines.append(f"• {change['description']}")
 
         description_lines.append("")
