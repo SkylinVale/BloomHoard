@@ -180,18 +180,43 @@ def build_whitelist_lines(kept: list) -> list[str]:
     return lines
 
 async def ocr_image(image_path: str) -> str:
-    """Run OCR on a screenshot and return the extracted text."""
-    from PIL import Image
+    """Run OCR with image preprocessing to improve text recognition."""
+
+    from PIL import Image, ImageEnhance, ImageFilter
     import pytesseract
 
-    image = Image.open(image_path)
+    image = Image.open(image_path).convert("RGB")
 
-    text = pytesseract.image_to_string(
-        image,
-        config="--psm 11"
+    # Enlarge the image so small/stylized text is easier for Tesseract.
+    scale = 2
+    image = image.resize(
+        (image.width * scale, image.height * scale),
+        Image.Resampling.LANCZOS
     )
 
-    return text
+    # Create several versions of the image.
+    grayscale = image.convert("L")
+
+    contrast = ImageEnhance.Contrast(grayscale).enhance(2.0)
+
+    sharpened = contrast.filter(
+        ImageFilter.SHARPEN
+    )
+
+    # OCR each version.
+    results = []
+
+    for variant in [image, grayscale, sharpened]:
+        result = pytesseract.image_to_string(
+            variant,
+            config="--psm 6"
+        )
+
+        if result.strip():
+            results.append(result.strip())
+
+    # Combine the results rather than trusting a single OCR pass.
+    return "\n".join(results)
 
 async def ocr_image_data(image_path: str) -> list[dict]:
     """Run OCR and return recognized words with position and confidence."""
