@@ -1920,7 +1920,7 @@ async def test_ocr(
 
         data = pytesseract.image_to_data(
             img,
-            config="--psm 11",
+            config="--psm 6",
             output_type=Output.DICT
         )
 
