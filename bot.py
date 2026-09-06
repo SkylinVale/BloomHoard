@@ -302,11 +302,11 @@ def parse_game_identity(text: str):
 
 def parse_task_logs(text: str) -> list[dict]:
     """
-    Extract task-log entries from OCR text.
+    Extract flower/task entries from OCR text.
 
     Supports:
-    - s29.Metp has completed...
-    - s102.DittoWasHere has completed...
+    - s29.Metp has completed Advanced Task 63: Harvest 560 Orange Poppy
+    - s25.Rosie has completed Task 29: Harvest 280 White Ixia
     - s29
       Metp
       has completed...
@@ -336,7 +336,6 @@ def parse_task_logs(text: str) -> list[dict]:
         if match:
             server_number = int(match.group(1))
             game_name = match.group(2)
-            start_index = i
 
         # ---------------------------------------------------------
         # Format 2:
@@ -353,7 +352,6 @@ def parse_task_logs(text: str) -> list[dict]:
             if server_match and i + 1 < len(lines):
                 possible_name = lines[i + 1]
 
-                # Don't mistake another server number for a name.
                 if not re.match(
                     r"^s\d{1,3}(?:\.|\s*$)",
                     possible_name,
@@ -368,28 +366,27 @@ def parse_task_logs(text: str) -> list[dict]:
             continue
 
         # ---------------------------------------------------------
-        # Gather the text belonging to this player.
-        # Stop when another server/player starts.
+        # Gather this player's text until the next server entry.
         # ---------------------------------------------------------
         entry_lines = [game_name]
-        j = start_index + 1
 
         if lines[start_index].lower().startswith(
             f"s{server_number}.".lower()
         ):
             j = start_index + 1
         else:
-            # Separate server/name format consumed the name line.
             j = start_index + 2
 
         while j < len(lines):
-            possible_server = re.match(
+            if re.match(
                 r"^s\d{1,3}(?:\.|\s*$)",
                 lines[j],
                 re.IGNORECASE
-            )
+            ):
+                break
 
-            if possible_server:
+            # Don't let the page footer become part of the task.
+            if "keep only the latest 100 logs" in lines[j].lower():
                 break
 
             entry_lines.append(lines[j])
@@ -399,31 +396,32 @@ def parse_task_logs(text: str) -> list[dict]:
 
         # ---------------------------------------------------------
         # Completed task
+        #
+        # We only care about:
+        #   has completed [Advanced] Task ##: Harvest FLOWER
+        #
+        # Everything after the flower is ignored.
         # ---------------------------------------------------------
         completed = re.search(
-            r"has\s+completed\s+(?:Advanced\s+)?Task\s+(\d+)\s*:\s*"
-            r"Harvest\s+(.+?)(?:,\s*earning\s+"
-            r"Competition\s+Points\s+x\s*(\d+)"
-            r"(?:,\s*Competition\s+Tokens\s+x\s*(\d+))?)?$",
+            r"has\s+completed\s+"
+            r"(?:Advanced\s+)?Task\s+(\d+)\s*:\s*"
+            r"Harvest\s+(.+?)"
+            r"(?=\s*,?\s*earning\s+Competition\s+Points\b|$)",
             entry_text,
             re.IGNORECASE
         )
 
         if completed:
+            flower = completed.group(2).strip(" ,.!;:")
+
             entries.append({
                 "server_number": server_number,
                 "game_name": game_name,
                 "action": "completed",
                 "task_number": int(completed.group(1)),
-                "task_text": completed.group(2).strip(),
-                "competition_points": (
-                    int(completed.group(3))
-                    if completed.group(3) else None
-                ),
-                "competition_tokens": (
-                    int(completed.group(4))
-                    if completed.group(4) else None
-                ),
+                "task_text": flower,
+                "competition_points": None,
+                "competition_tokens": None,
             })
 
             i = j
@@ -433,19 +431,23 @@ def parse_task_logs(text: str) -> list[dict]:
         # Upgraded task
         # ---------------------------------------------------------
         upgraded = re.search(
-            r"spent\s+Ingots\s+to\s+upgrade\s+Task\s+(\d+)\s*:\s*"
-            r"Harvest\s+(.+?)[!.]*$",
+            r"spent\s+Ingots\s+to\s+upgrade\s+"
+            r"Task\s+(\d+)\s*:\s*"
+            r"Harvest\s+(.+?)"
+            r"(?=[!.]|$)",
             entry_text,
             re.IGNORECASE
         )
 
         if upgraded:
+            flower = upgraded.group(2).strip(" ,.!;:")
+
             entries.append({
                 "server_number": server_number,
                 "game_name": game_name,
                 "action": "upgraded",
                 "task_number": int(upgraded.group(1)),
-                "task_text": upgraded.group(2).strip(),
+                "task_text": flower,
                 "competition_points": None,
                 "competition_tokens": None,
             })
@@ -455,7 +457,26 @@ def parse_task_logs(text: str) -> list[dict]:
 
         i = j
 
-    return entries
+    # -------------------------------------------------------------
+    # Remove exact duplicate OCR entries.
+    # -------------------------------------------------------------
+    unique_entries = []
+    seen = set()
+
+    for entry in entries:
+        key = (
+            entry["server_number"],
+            entry["game_name"].lower(),
+            entry["action"],
+            entry["task_number"],
+            entry["task_text"].lower(),
+        )
+
+        if key not in seen:
+            seen.add(key)
+            unique_entries.append(entry)
+
+    return unique_entries
 
 def group_ocr_lines(words: list[dict]) -> list[str]:
     """Group OCR words into readable lines using their Y coordinates."""
