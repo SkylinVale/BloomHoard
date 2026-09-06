@@ -393,7 +393,9 @@ def parse_task_logs(text: str) -> list[dict]:
             j += 1
 
         entry_text = " ".join(entry_lines)
+
         print("DEBUG ENTRY:", repr(entry_text))
+        entries = parse_task_logs(ocr_text)
 
         # ---------------------------------------------------------
         # Completed task
@@ -2169,10 +2171,17 @@ async def testtaskparse(
         ocr_text = await ocr_image(crop_path)
         entries = parse_task_logs(ocr_text)
 
+        debug_lines = [
+            f"`{line}`"
+            for line in ocr_text.splitlines()
+            if "spent" in line.lower() or "upgrade" in line.lower()
+        ]
+
         if not entries:
             await interaction.followup.send(
-                f"❌ OCR worked, but no task-log entries were detected.\n\n"
-                f"Raw OCR:\n```text\n{ocr_text[:1500]}\n```",
+                "❌ OCR worked, but no task-log entries were detected.\n\n"
+                "**Upgrade-related OCR lines:**\n" +
+                "\n".join(debug_lines),
                 ephemeral=True
             )
             return
