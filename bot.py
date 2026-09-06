@@ -1906,6 +1906,18 @@ async def test_ocr(
 
         img = Image.open(temp_path)
 
+        from PIL import ImageOps, ImageEnhance, ImageFilter
+
+        # Preprocess for small/stylized game text
+        img = img.convert("L")
+        img = img.resize(
+            (img.width * 3, img.height * 3),
+            Image.Resampling.LANCZOS
+        )
+        img = ImageOps.autocontrast(img)
+        img = ImageEnhance.Contrast(img).enhance(1.8)
+        img = img.filter(ImageFilter.SHARPEN)
+
         data = pytesseract.image_to_data(
             img,
             config="--psm 11",
