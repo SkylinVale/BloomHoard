@@ -275,6 +275,89 @@ def parse_game_identity(text: str):
 
     return identities
 
+def parse_task_logs(text: str) -> list[dict]:
+    """
+    Extract task-log entries from OCR text.
+
+    Supports entries such as:
+    s29.Metp has completed Advanced Task 48: Harvest 560 Pink Snapdragon,
+    earning Competition Points x46, Competition Tokens x46
+
+    s2.Matilda spent Ingots to upgrade Task 42: Harvest 560 Ice Blue Petunia!!
+    """
+
+    # Collapse OCR line breaks/spacing into one searchable string.
+    normalized = re.sub(r"\s+", " ", text).strip()
+
+    entries = []
+
+    # Find every possible server + player-name starting point.
+    starts = list(
+        re.finditer(
+            r"\bs(\d{1,3})\s*\.\s*([^\s]+)",
+            normalized,
+            re.IGNORECASE
+        )
+    )
+
+    for index, match in enumerate(starts):
+        server_number = int(match.group(1))
+        game_name = match.group(2).strip()
+
+        # Stop at the beginning of the next player entry.
+        start = match.start()
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(normalized)
+
+        entry_text = normalized[start:end].strip()
+
+        # Completed task
+        completed = re.search(
+            r"has\s+completed\s+(?:Advanced\s+)?Task\s+(\d+)\s*:\s*"
+            r"Harvest\s+(.+?)(?:,\s*earning\s+Competition\s+Points\s+x\s*(\d+)"
+            r"(?:,\s*Competition\s+Tokens\s+x\s*(\d+))?)?$",
+            entry_text,
+            re.IGNORECASE
+        )
+
+        if completed:
+            entries.append({
+                "server_number": server_number,
+                "game_name": game_name,
+                "action": "completed",
+                "task_number": int(completed.group(1)),
+                "task_text": completed.group(2).strip(),
+                "competition_points": (
+                    int(completed.group(3))
+                    if completed.group(3) else None
+                ),
+                "competition_tokens": (
+                    int(completed.group(4))
+                    if completed.group(4) else None
+                ),
+            })
+            continue
+
+        # Upgraded task
+        upgraded = re.search(
+            r"spent\s+Ingots\s+to\s+upgrade\s+Task\s+(\d+)\s*:\s*"
+            r"Harvest\s+(.+?)[!.]*$",
+            entry_text,
+            re.IGNORECASE
+        )
+
+        if upgraded:
+            entries.append({
+                "server_number": server_number,
+                "game_name": game_name,
+                "action": "upgraded",
+                "task_number": int(upgraded.group(1)),
+                "task_text": upgraded.group(2).strip(),
+                "competition_points": None,
+                "competition_tokens": None,
+            })
+
+    return entries
+
 def group_ocr_lines(words: list[dict]) -> list[str]:
     """Group OCR words into readable lines using their Y coordinates."""
 
@@ -1821,7 +1904,53 @@ async def testocrdata(interaction: discord.Interaction, image: discord.Attachmen
             f"❌ OCR test failed: `{type(e).__name__}: {e}`",
             ephemeral=True
         )
-    
+@tree.command(
+    name="testtaskparse",
+    description="Test task-log screenshot parsing"
+)
+@app_commands.describe(
+    image="Upload a task-log screenshot"
+)
+async def testtaskparse(
+    interaction: discord.Interaction,
+    image: discord.Attachment
+):
+    await interaction.response.defer(ephemeral=True)
+
+    image_path = f"/tmp/{image.filename}"
+    await image.save(image_path)
+
+    try:
+        ocr_text = await ocr_image(image_path)
+        entries = parse_task_logs(ocr_text)
+
+        if not entries:
+            await interaction.followup.send(
+                "❌ OCR worked, but no task-log entries were detected.",
+                ephemeral=True
+            )
+            return
+
+        lines = ["🔎 **Parsed task-log entries:**"]
+
+        for entry in entries:
+            lines.append(
+                f"**s{entry['server_number']}.{entry['game_name']}** "
+                f"→ {entry['action']} Task {entry['task_number']}: "
+                f"{entry['task_text']}"
+            )
+
+        await interaction.followup.send(
+            "\n".join(lines),
+            ephemeral=True
+        )
+
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ Task parser test failed: `{type(e).__name__}: {e}`",
+            ephemeral=True
+        )
+
 # ════════════════════════════════════════════════════════════════════════════════
 # RUN
 # ════════════════════════════════════════════════════════════════════════════════
