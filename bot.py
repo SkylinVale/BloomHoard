@@ -1743,6 +1743,42 @@ async def test_ocr(
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+@tree.command(name="testocrdata", description="Test structured OCR output")
+@app_commands.describe(image="Upload a screenshot")
+async def testocrdata(interaction: discord.Interaction, image: discord.Attachment):
+    await interaction.response.defer(ephemeral=True)
+
+    image_path = f"/tmp/{image.filename}"
+
+    try:
+        await image.save(image_path)
+
+        data = await ocr_image_data(image_path)
+
+        lines = []
+        for item in data:
+            lines.append(
+                f"y={item['y']} x={item['x']} "
+                f"conf={item['confidence']:.0f} "
+                f"{item['text']}"
+            )
+
+        output = "\n".join(lines)
+
+        if len(output) > 1900:
+            output = output[:1900] + "\n...[truncated]"
+
+        await interaction.followup.send(
+            f"🔎 **Structured OCR result:**\n```text\n{output}\n```",
+            ephemeral=True
+        )
+
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ OCR test failed: `{type(e).__name__}: {e}`",
+            ephemeral=True
+        )
     
 # ════════════════════════════════════════════════════════════════════════════════
 # RUN
