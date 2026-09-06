@@ -1937,13 +1937,35 @@ async def test_ocr(
                 "conf": confidence,
             })
 
+        # Group OCR words into approximate visual lines
         results.sort(key=lambda r: (r["y"], r["x"]))
 
-        lines = [
-            f"y={r['y']:4} x={r['x']:4} "
-            f"conf={r['conf']:3.0f}  {r['text']}"
-            for r in results
+        ocr_lines = []
+
+        for r in results:
+            placed = False
+
+            for line in ocr_lines:
+                if abs(r["y"] - line["y"]) <= 12:
+                    line["words"].append(r)
+                    placed = True
+                    break
+
+            if not placed:
+                ocr_lines.append({
+                    "y": r["y"],
+                    "words": [r]
+                })
+
+        for line in ocr_lines:
+            line["words"].sort(key=lambda r: r["x"])
+
+        text_lines = [
+            " ".join(r["text"] for r in line["words"])
+            for line in ocr_lines
         ]
+
+        output = "\n".join(text_lines)
 
         output = "\n".join(lines)
 
