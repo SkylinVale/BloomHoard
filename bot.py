@@ -360,7 +360,12 @@ def parse_task_logs(text: str) -> list[dict]:
         # ---------------------------------------------------------
         # Gather this player's text until the next server entry.
         # ---------------------------------------------------------
-        entry_lines = [game_name]
+        if lines[start_index].lower().startswith(
+            f"s{server_number}.".lower()
+        ):
+            entry_lines = [lines[start_index]]
+        else:
+            entry_lines = [game_name]
 
         if lines[start_index].lower().startswith(
             f"s{server_number}.".lower()
