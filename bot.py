@@ -2004,6 +2004,76 @@ async def test_ocr(
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
+@tree.command(name="testcompocr", description="Test competition screenshot OCR")
+@app_commands.describe(image="Upload a competition ranking screenshot")
+@app_commands.checks.has_permissions(administrator=True)
+async def test_comp_ocr(
+    interaction: discord.Interaction,
+    image: discord.Attachment
+):
+    await interaction.response.defer(ephemeral=True)
+
+    if not image.content_type or not image.content_type.startswith("image/"):
+        await interaction.followup.send(
+            "❌ Please upload an image file.",
+            ephemeral=True
+        )
+        return
+
+    extension = os.path.splitext(image.filename)[1] or ".png"
+    temp_path = f"/tmp/blossomhoard_compocr{extension}"
+
+    try:
+        await image.save(temp_path)
+
+        from PIL import Image, ImageOps, ImageEnhance
+        import pytesseract
+
+        img = Image.open(temp_path)
+
+        # Crop away the avatars/rank numbers and keep the actual player data.
+        w, h = img.size
+        crop = img.crop((
+            int(w * 0.39),
+            int(h * 0.32),
+            w,
+            int(h * 0.91)
+        ))
+
+        # Enlarge and simplify the image for OCR.
+        crop = crop.resize(
+            (crop.width * 2, crop.height * 2),
+            Image.Resampling.LANCZOS
+        )
+        crop = ImageOps.grayscale(crop)
+        crop = ImageEnhance.Contrast(crop).enhance(1.5)
+
+        text = pytesseract.image_to_string(
+            crop,
+            config="--psm 6"
+        ).strip()
+
+        if not text:
+            text = "No OCR text detected."
+
+        # Keep the Discord message safely under 2000 characters.
+        text = text[:1800]
+
+        await interaction.followup.send(
+            f"🔎 **Competition OCR test:**\n```text\n{text}\n```",
+            ephemeral=True
+        )
+
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ OCR test failed: `{type(e).__name__}: {e}`",
+            ephemeral=True
+        )
+
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
 @tree.command(name="testocrdata", description="Test structured OCR output")
 @app_commands.describe(image="Upload a screenshot")
 async def testocrdata(interaction: discord.Interaction, image: discord.Attachment):
