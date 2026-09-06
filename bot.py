@@ -399,15 +399,16 @@ def parse_task_logs(text: str) -> list[dict]:
         # ---------------------------------------------------------
         completed = re.search(
             r"has\s+completed\s+"
-            r"(?:Advanced\s+)?Task\s+(\d+)\s*:\s*"
+            r"(?:Advanced\s+.*?)?"
+            r"Task\s+(\d+)\s*:\s*"
             r"Harvest\s+(.+?)"
-            r"(?=,\s*earning\b|$)",
+            r"(?:,\s*earning\b|$)",
             entry_text,
             re.IGNORECASE
         )
 
         if completed:
-            flower = completed.group(2).strip(" ,.!;:")
+            flower = completed.group(2).strip(" ,.;:'\"")
 
             entries.append({
                 "server_number": server_number,
