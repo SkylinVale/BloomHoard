@@ -401,7 +401,7 @@ def parse_task_logs(text: str) -> list[dict]:
             r"has\s+completed\s+"
             r"(?:Advanced\s+)?Task\s+(\d+)\s*:\s*"
             r"Harvest\s+(.+?)"
-            r"(?=\s*,?\s*earning\s+Competition\s+Points\b|$)",
+            r"(?=,\s*earning\b|$)",
             entry_text,
             re.IGNORECASE
         )
