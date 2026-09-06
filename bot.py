@@ -188,7 +188,7 @@ async def ocr_image(image_path: str) -> str:
 
     text = pytesseract.image_to_string(
         image,
-        config="--psm 6"
+        config="--psm 11"
     )
 
     return text
