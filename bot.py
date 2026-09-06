@@ -2034,8 +2034,8 @@ async def test_comp_ocr(
         # Crop away the avatars/rank numbers and keep the actual player data.
         w, h = img.size
         crop = img.crop((
-            int(w * 0.39),
-            int(h * 0.32),
+            int(w * 0.40),
+            int(h * 0.39),
             w,
             int(h * 0.91)
         ))
