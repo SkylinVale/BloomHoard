@@ -194,7 +194,6 @@ async def ocr_image(image_path: str) -> str:
         Image.Resampling.LANCZOS
     )
 
-    # Create several versions of the image.
     grayscale = image.convert("L")
 
     contrast = ImageEnhance.Contrast(grayscale).enhance(2.0)
@@ -203,20 +202,13 @@ async def ocr_image(image_path: str) -> str:
         ImageFilter.SHARPEN
     )
 
-    # OCR each version.
-    results = []
+    # Use the sharpened version as the primary OCR input.
+    result = pytesseract.image_to_string(
+        sharpened,
+        config="--psm 6"
+    )
 
-    for variant in [image, grayscale, sharpened]:
-        result = pytesseract.image_to_string(
-            variant,
-            config="--psm 6"
-        )
-
-        if result.strip():
-            results.append(result.strip())
-
-    # Combine the results rather than trusting a single OCR pass.
-    return "\n".join(results)
+    return result.strip()
 
 async def ocr_image_data(image_path: str) -> list[dict]:
     """Run OCR and return recognized words with position and confidence."""
@@ -378,15 +370,18 @@ def parse_task_logs(text: str) -> list[dict]:
             j = start_index + 2
 
         while j < len(lines):
-            if re.match(
+            possible_server = re.match(
                 r"^s\d{1,3}(?:\.|\s*$)",
                 lines[j],
                 re.IGNORECASE
-            ):
-                break
+            )
 
-            # Don't let the page footer become part of the task.
-            if "keep only the latest 100 logs" in lines[j].lower():
+            possible_timestamp = re.match(
+                r"^\d{2}\.\d{2}\s+\d{1,2}:\d{2}$",
+                lines[j]
+            )
+
+            if possible_server or possible_timestamp:
                 break
 
             entry_lines.append(lines[j])
