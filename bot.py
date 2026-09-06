@@ -423,6 +423,7 @@ def parse_task_logs(text: str) -> list[dict]:
                 "task_text": flower,
                 "competition_points": None,
                 "competition_tokens": None,
+                "is_flower": True,
             })
 
             i = j
@@ -451,6 +452,7 @@ def parse_task_logs(text: str) -> list[dict]:
                 "task_text": flower,
                 "competition_points": None,
                 "competition_tokens": None,
+                "is_flower": True,
             })
 
             i = j
@@ -2184,6 +2186,7 @@ async def testtaskparse(
                 f"**s{entry['server_number']}.{entry['game_name']}** "
                 f"→ {entry['action']} Task {entry['task_number']}: "
                 f"{entry['task_text']}"
+                f"→ 🌸 FLOWER"
             )
 
         await interaction.followup.send(
