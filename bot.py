@@ -1965,6 +1965,8 @@ async def test_ocr(
             for line in ocr_lines
         ]
 
+        lines = text_lines
+
         output = "\n".join(text_lines)
 
         output = "\n".join(lines)
