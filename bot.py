@@ -1561,34 +1561,7 @@ async def logchange(interaction: discord.Interaction, description: str):
         ephemeral=True
     )
 
-@tree.command(name="resolve", description="Test an in-game name lookup")
-@app_commands.describe(
-    server_number="The server number (example: 5 for s5)",
-    game_name="The exact in-game name"
-)
-@app_commands.checks.has_permissions(administrator=True)
-async def resolve(
-    interaction: discord.Interaction,
-    server_number: int,
-    game_name: str
-):
-    await interaction.response.defer(ephemeral=True)
 
-    game_name = game_name.strip()
-
-    florist = await resolve_game_identity(server_number, game_name)
-
-    if not florist:
-        await interaction.followup.send(
-            f"❌ I couldn't find **s{server_number}.{game_name}** in the linked game names.",
-            ephemeral=True
-        )
-        return
-
-    await interaction.followup.send(
-        f"🔗 **s{server_number}.{game_name}** → **{florist}**",
-        ephemeral=True
-    )
     
 # ════════════════════════════════════════════════════════════════════════════════
 # RUN
