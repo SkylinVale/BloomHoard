@@ -435,21 +435,18 @@ def parse_task_logs(text: str) -> list[dict]:
         upgraded = re.search(
             r"spent\s+Ingots\s+to\s+upgrade\s+"
             r"Task\s+(\d+)\s*:\s*"
-            r"Harvest\s+(.+?)"
-            r"(?=[!.]|$)",
+            r"Harvest\s+(.+?)(?:!!|!|\.)?$",
             entry_text,
             re.IGNORECASE
         )
 
         if upgraded:
-            flower = upgraded.group(2).strip(" ,.!;:")
-
             entries.append({
                 "server_number": server_number,
                 "game_name": game_name,
                 "action": "upgraded",
                 "task_number": int(upgraded.group(1)),
-                "task_text": flower,
+                "task_text": upgraded.group(2).strip(),
                 "competition_points": None,
                 "competition_tokens": None,
                 "is_flower": True,
