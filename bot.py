@@ -226,6 +226,10 @@ async def ocr_image_data(image_path: str) -> list[dict]:
             "y": data["top"][i],
             "width": data["width"][i],
             "height": data["height"][i],
+            "block_num": data["block_num"][i],
+            "par_num": data["par_num"][i],
+            "line_num": data["line_num"][i],
+            "word_num": data["word_num"][i],
         })
 
     return results
