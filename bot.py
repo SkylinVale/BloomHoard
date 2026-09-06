@@ -2109,6 +2109,8 @@ async def testocrdata(interaction: discord.Interaction, image: discord.Attachmen
             f"❌ OCR test failed: `{type(e).__name__}: {e}`",
             ephemeral=True
         )
+
+
 @tree.command(
     name="testtaskparse",
     description="Test task-log screenshot parsing"
@@ -2126,12 +2128,29 @@ async def testtaskparse(
     await image.save(image_path)
 
     try:
-        ocr_text = await ocr_image(image_path)
+        from PIL import Image
+
+        img = Image.open(image_path)
+
+        # Crop to the actual task-log text area.
+        w, h = img.size
+        crop = img.crop((
+            int(w * 0.27),
+            int(h * 0.32),
+            int(w * 0.93),
+            int(h * 0.91)
+        ))
+
+        crop_path = "/tmp/blossomhoard_tasklog_crop.png"
+        crop.save(crop_path)
+
+        ocr_text = await ocr_image(crop_path)
         entries = parse_task_logs(ocr_text)
 
         if not entries:
             await interaction.followup.send(
-                "❌ OCR worked, but no task-log entries were detected.",
+                f"❌ OCR worked, but no task-log entries were detected.\n\n"
+                f"Raw OCR:\n```text\n{ocr_text[:1500]}\n```",
                 ephemeral=True
             )
             return
@@ -2155,6 +2174,14 @@ async def testtaskparse(
             f"❌ Task parser test failed: `{type(e).__name__}: {e}`",
             ephemeral=True
         )
+
+    finally:
+        if os.path.exists(image_path):
+            os.remove(image_path)
+
+        crop_path = "/tmp/blossomhoard_tasklog_crop.png"
+        if os.path.exists(crop_path):
+            os.remove(crop_path)
 
 # ════════════════════════════════════════════════════════════════════════════════
 # RUN
