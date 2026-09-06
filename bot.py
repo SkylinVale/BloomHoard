@@ -1626,7 +1626,6 @@ async def test_ocr(
 ):
     await interaction.response.defer(ephemeral=True)
 
-    # Make sure this is an image
     if not image.content_type or not image.content_type.startswith("image/"):
         await interaction.followup.send(
             "❌ Please upload an image file.",
@@ -1634,25 +1633,67 @@ async def test_ocr(
         )
         return
 
-    # Save the Discord attachment temporarily
     extension = os.path.splitext(image.filename)[1] or ".png"
     temp_path = f"/tmp/blossomhoard_ocr{extension}"
 
     try:
         await image.save(temp_path)
 
-        # Run OCR
-        text = await ocr_image(temp_path)
+        from PIL import Image
+        import pytesseract
+        from pytesseract import Output
 
-        if not text.strip():
-            await interaction.followup.send(
-                "❌ OCR returned no text.",
-                ephemeral=True
-            )
-            return
+        img = Image.open(temp_path)
+
+        data = pytesseract.image_to_data(
+            img,
+            config="--psm 11",
+            output_type=Output.DICT
+        )
+
+        results = []
+
+        for i in range(len(data["text"])):
+            text = data["text"][i].strip()
+
+            if not text:
+                continue
+
+            try:
+                confidence = float(data["conf"][i])
+            except (ValueError, TypeError):
+                confidence = -1
+
+            if confidence < 20:
+                continue
+
+            results.append({
+                "text": text,
+                "x": data["left"][i],
+                "y": data["top"][i],
+                "w": data["width"][i],
+                "h": data["height"][i],
+                "conf": confidence,
+            })
+
+        results.sort(key=lambda r: (r["y"], r["x"]))
+
+        lines = [
+            f"y={r['y']:4} x={r['x']:4} "
+            f"conf={r['conf']:3.0f}  {r['text']}"
+            for r in results
+        ]
+
+        output = "\n".join(lines)
+
+        if not output:
+            output = "No usable OCR text detected."
+
+        # Discord messages have a 2000-character limit.
+        output = output[:1800]
 
         await interaction.followup.send(
-            f"🔎 **OCR result:**\n```text\n{text[:1800]}\n```",
+            f"🔎 **OCR coordinate test:**\n```text\n{output}\n```",
             ephemeral=True
         )
 
