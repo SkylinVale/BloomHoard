@@ -1,4 +1,5 @@
 import os
+import re
 import discord
 from discord import app_commands
 from supabase import create_client, Client
@@ -177,6 +178,61 @@ def build_whitelist_lines(kept: list) -> list[str]:
         ico = rarity_icon(b["rarity"]) if b.get("rarity") else ""
         lines.append(f"{ico} **{b['name']}** — {b['points']} pts")
     return lines
+
+async def ocr_image(image_path: str) -> str:
+    """Run OCR on a screenshot and return the extracted text."""
+    from PIL import Image
+    import pytesseract
+
+    image = Image.open(image_path)
+
+    text = pytesseract.image_to_string(
+        image,
+        config="--psm 6"
+    )
+
+    return text
+
+def parse_game_identity(text: str):
+    """
+    Extract (server_number, game_name) pairs from OCR text.
+
+    Supports:
+    - s5.Miraea
+    - s102.DittoWasHere
+    - s5
+      Miraea
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    identities = []
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Format: s5.Miraea
+        match = re.fullmatch(r"s(\d+)\.(.+)", line, re.IGNORECASE)
+        if match:
+            identities.append((int(match.group(1)), match.group(2).strip()))
+            i += 1
+            continue
+
+        # Format:
+        # s5
+        # Miraea
+        match = re.fullmatch(r"s(\d+)", line, re.IGNORECASE)
+        if match and i + 1 < len(lines):
+            next_line = lines[i + 1].strip()
+
+            # Don't accept another server line as the name
+            if not re.fullmatch(r"s\d+", next_line, re.IGNORECASE):
+                identities.append((int(match.group(1)), next_line))
+                i += 2
+                continue
+
+        i += 1
+
+    return identities
 
 async def resolve_game_identity(server_number: int, game_name: str):
     game_name = game_name.strip()
@@ -1561,7 +1617,54 @@ async def logchange(interaction: discord.Interaction, description: str):
         ephemeral=True
     )
 
+@tree.command(name="testocr", description="Test screenshot OCR")
+@app_commands.describe(image="Upload a screenshot to test OCR")
+@app_commands.checks.has_permissions(administrator=True)
+async def test_ocr(
+    interaction: discord.Interaction,
+    image: discord.Attachment
+):
+    await interaction.response.defer(ephemeral=True)
 
+    # Make sure this is an image
+    if not image.content_type or not image.content_type.startswith("image/"):
+        await interaction.followup.send(
+            "❌ Please upload an image file.",
+            ephemeral=True
+        )
+        return
+
+    # Save the Discord attachment temporarily
+    extension = os.path.splitext(image.filename)[1] or ".png"
+    temp_path = f"/tmp/blossomhoard_ocr{extension}"
+
+    try:
+        await image.save(temp_path)
+
+        # Run OCR
+        text = await ocr_image(temp_path)
+
+        if not text.strip():
+            await interaction.followup.send(
+                "❌ OCR returned no text.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.followup.send(
+            f"🔎 **OCR result:**\n```text\n{text[:1800]}\n```",
+            ephemeral=True
+        )
+
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ OCR test failed: `{type(e).__name__}: {e}`",
+            ephemeral=True
+        )
+
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
     
 # ════════════════════════════════════════════════════════════════════════════════
 # RUN
