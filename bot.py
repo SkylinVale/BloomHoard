@@ -279,41 +279,106 @@ def parse_task_logs(text: str) -> list[dict]:
     """
     Extract task-log entries from OCR text.
 
-    Supports entries such as:
-    s29.Metp has completed Advanced Task 48: Harvest 560 Pink Snapdragon,
-    earning Competition Points x46, Competition Tokens x46
-
-    s2.Matilda spent Ingots to upgrade Task 42: Harvest 560 Ice Blue Petunia!!
+    Supports:
+    - s29.Metp has completed...
+    - s102.DittoWasHere has completed...
+    - s29
+      Metp
+      has completed...
     """
 
-    # Collapse OCR line breaks/spacing into one searchable string.
-    normalized = re.sub(r"\s+", " ", text).strip()
-
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
     entries = []
 
-    # Find every possible server + player-name starting point.
-    starts = list(
-        re.finditer(
-            r"\bs(\d{1,3})\s*\.\s*([^\s]+)",
-            normalized,
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        server_number = None
+        game_name = None
+        start_index = i
+
+        # ---------------------------------------------------------
+        # Format 1: s29.Metp
+        # ---------------------------------------------------------
+        match = re.match(
+            r"^s(\d{1,3})\s*\.\s*(\S+)",
+            line,
             re.IGNORECASE
         )
-    )
 
-    for index, match in enumerate(starts):
-        server_number = int(match.group(1))
-        game_name = match.group(2).strip()
+        if match:
+            server_number = int(match.group(1))
+            game_name = match.group(2)
+            start_index = i
 
-        # Stop at the beginning of the next player entry.
-        start = match.start()
-        end = starts[index + 1].start() if index + 1 < len(starts) else len(normalized)
+        # ---------------------------------------------------------
+        # Format 2:
+        # s29
+        # Metp
+        # ---------------------------------------------------------
+        else:
+            server_match = re.match(
+                r"^s(\d{1,3})$",
+                line,
+                re.IGNORECASE
+            )
 
-        entry_text = normalized[start:end].strip()
+            if server_match and i + 1 < len(lines):
+                possible_name = lines[i + 1]
 
+                # Don't mistake another server number for a name.
+                if not re.match(
+                    r"^s\d{1,3}(?:\.|\s*$)",
+                    possible_name,
+                    re.IGNORECASE
+                ):
+                    server_number = int(server_match.group(1))
+                    game_name = possible_name
+                    start_index = i
+
+        if server_number is None:
+            i += 1
+            continue
+
+        # ---------------------------------------------------------
+        # Gather the text belonging to this player.
+        # Stop when another server/player starts.
+        # ---------------------------------------------------------
+        entry_lines = [game_name]
+        j = start_index + 1
+
+        if lines[start_index].lower().startswith(
+            f"s{server_number}.".lower()
+        ):
+            j = start_index + 1
+        else:
+            # Separate server/name format consumed the name line.
+            j = start_index + 2
+
+        while j < len(lines):
+            possible_server = re.match(
+                r"^s\d{1,3}(?:\.|\s*$)",
+                lines[j],
+                re.IGNORECASE
+            )
+
+            if possible_server:
+                break
+
+            entry_lines.append(lines[j])
+            j += 1
+
+        entry_text = " ".join(entry_lines)
+
+        # ---------------------------------------------------------
         # Completed task
+        # ---------------------------------------------------------
         completed = re.search(
             r"has\s+completed\s+(?:Advanced\s+)?Task\s+(\d+)\s*:\s*"
-            r"Harvest\s+(.+?)(?:,\s*earning\s+Competition\s+Points\s+x\s*(\d+)"
+            r"Harvest\s+(.+?)(?:,\s*earning\s+"
+            r"Competition\s+Points\s+x\s*(\d+)"
             r"(?:,\s*Competition\s+Tokens\s+x\s*(\d+))?)?$",
             entry_text,
             re.IGNORECASE
@@ -335,9 +400,13 @@ def parse_task_logs(text: str) -> list[dict]:
                     if completed.group(4) else None
                 ),
             })
+
+            i = j
             continue
 
+        # ---------------------------------------------------------
         # Upgraded task
+        # ---------------------------------------------------------
         upgraded = re.search(
             r"spent\s+Ingots\s+to\s+upgrade\s+Task\s+(\d+)\s*:\s*"
             r"Harvest\s+(.+?)[!.]*$",
@@ -355,6 +424,11 @@ def parse_task_logs(text: str) -> list[dict]:
                 "competition_points": None,
                 "competition_tokens": None,
             })
+
+            i = j
+            continue
+
+        i = j
 
     return entries
 
