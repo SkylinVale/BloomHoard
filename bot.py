@@ -386,7 +386,13 @@ def parse_task_logs(text: str) -> list[dict]:
                 lines[j]
             )
 
-            if possible_server or possible_timestamp:
+            possible_footer = re.match(
+                r"^[^a-zA-Z]*(?:keep|feep)\s+only\s+(?:the\s+)?latest\s+100\s+logs",
+                lines[j],
+                re.IGNORECASE
+            )    
+            
+            if possible_server or possible_timestamp or possible_footer:
                 break
 
             entry_lines.append(lines[j])
