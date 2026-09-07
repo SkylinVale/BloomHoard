@@ -292,21 +292,54 @@ def parse_game_identity(text: str):
 
     return identities
 
-def parse_task_logs(text: str) -> list[dict]:
+def parse_task_logs(
+    text: str,
+    player_aliases: dict | None = None,
+) -> list[dict]:
     """
     Extract flower/task entries from OCR text.
 
-    Supports:
-    - s29.Metp has completed Advanced Task 63: Harvest 560 Orange Poppy
-    - s25.Rosie has completed Task 29: Harvest 280 White Ixia
-    - s29
-      Metp
-      has completed...
+    This parser intentionally treats OCR as unreliable.
 
-    Also detects:
-    - Flower task upgrades:
-      spent Ingots to upgrade Task 48: Harvest 560 Pink Snapdragon!!
-    - Non-flower upgrades are intentionally ignored.
+    Supported examples:
+
+        s29.Metp has completed Advanced Task 63: Harvest 560 Orange Poppy
+        s25.Rosie has completed Task 29: Harvest 280 White Ixia
+        s39.Re Nichole has completed Advanced Task 7: Harvest 560 Brunfelsia pauciflora
+        s16.Hill Ynez has completed Task 24: Harvest 280 Orange Oxalis
+        s4.Lily spent Ingots to upgrade Task 60: Harvest 560 Taro Purple Gladiolus!!
+
+    OCR damage tolerated:
+
+        $s16.Hill Ynez has completed Task \
+        24: Harvest 280 Orange Oxalis
+
+        s61.Lexie has completed Task 20: {
+        Harvest 280 Golden Lycoris
+
+        s15.Starla has completed
+        Advanced Task 7: Harvested 600
+        Golden Scales in Flight
+
+        . $38.44= spent Ingots to upgrade
+        , Task 12: Harvest 560 Pink Astilbe!!
+
+    If a task can be identified but its player cannot,
+    the parser returns:
+
+        game_name = "<unknown player>"
+        server_number = None
+        ocr_player = <whatever OCR appeared to say>
+
+    player_aliases may be supplied later to resolve known OCR names,
+    e.g.:
+
+        {
+            "pes eiuey": "Bluey",
+            "re nichole": "Re Nichole",
+        }
+
+    Non-flower upgrades are intentionally ignored.
     """
 
     print("\n" + "=" * 70)
@@ -317,619 +350,817 @@ def parse_task_logs(text: str) -> list[dict]:
     print(repr(text))
 
     # ---------------------------------------------------------
-    # Clean OCR into usable lines.
+    # Alias normalization
     # ---------------------------------------------------------
-    lines = [
+
+    aliases = {}
+
+    if player_aliases:
+        aliases = {
+            str(k).strip().lower(): str(v).strip()
+            for k, v in player_aliases.items()
+            if str(k).strip() and str(v).strip()
+        }
+
+    print("\nDEBUG PLAYER ALIASES:")
+    print(repr(aliases))
+
+    # ---------------------------------------------------------
+    # Basic OCR helpers
+    # ---------------------------------------------------------
+
+    def normalize_spaces(value: str) -> str:
+        return re.sub(r"\s+", " ", value).strip()
+
+    def is_timestamp(value: str) -> bool:
+        """
+        Normal timestamp:
+            08.27 19:38
+
+        Also tolerate OCR punctuation before/after it.
+        """
+        return bool(
+            re.match(
+                r"^[^A-Za-z0-9]*"
+                r"\d{2}[.,]\d{2}"
+                r"\s+"
+                r"\d{1,2}:\d{2}"
+                r"[^A-Za-z0-9]*$",
+                value,
+            )
+        )
+
+    def is_footer(value: str) -> bool:
+        return bool(
+            re.match(
+                r"^[^A-Za-z]*"
+                r"(?:keep|feep)"
+                r"\s+only\s+"
+                r"(?:the\s+)?latest\s+100\s+logs",
+                value,
+                re.IGNORECASE,
+            )
+        )
+
+    def clean_player_name(value: str) -> str:
+        """
+        Remove OCR garbage around an otherwise valid player name.
+
+        Example:
+            'fi=' -> 'fi'
+            'Metp|' -> 'Metp'
+        """
+        value = normalize_spaces(value)
+
+        value = value.strip(
+            " \t\r\n.,;:'\"!?|\\/_=+-»>«<()[]{}"
+        )
+
+        return value
+
+    def clean_flower_name(value: str) -> str:
+        """
+        Clean OCR punctuation from the flower name while preserving
+        the actual task quantity/name.
+
+        Example:
+            '560 Pink | Snapdragon'
+                -> '560 Pink Snapdragon'
+
+            '560 Peach Cream Dahlia, earning Competition...'
+                -> '560 Peach Cream Dahlia'
+        """
+
+        value = normalize_spaces(value)
+
+        # Remove obvious OCR decoration characters.
+        value = re.sub(
+            r"[|\\»>_{}[\]()]",
+            " ",
+            value,
+        )
+
+        # The competition text is never part of the flower name.
+        value = re.split(
+            r",?\s*earning\b",
+            value,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+
+        value = re.split(
+            r"\bCompetition\s+Points\b",
+            value,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+
+        value = normalize_spaces(value)
+
+        value = value.strip(
+            " \t\r\n.,;:'\"!?|\\/_=+-»>«<()[]{}"
+        )
+
+        return value
+
+    def apply_alias(name: str) -> str:
+        """
+        Apply a manually configured OCR alias.
+
+        Aliases are case-insensitive.
+        """
+        cleaned = clean_player_name(name)
+
+        alias = aliases.get(cleaned.lower())
+
+        if alias:
+            print(
+                "DEBUG PLAYER ALIAS MATCH: "
+                f"{cleaned!r} -> {alias!r}"
+            )
+            return alias
+
+        return cleaned
+
+    # ---------------------------------------------------------
+    # Player header detection
+    # ---------------------------------------------------------
+    #
+    # IMPORTANT:
+    #
+    # The old parser captured only ONE word:
+    #
+    #     s39.Re Nichole
+    #          ^^
+    #          Re
+    #
+    # We instead capture EVERYTHING between the server separator
+    # and the known action phrase.
+    #
+    # This allows:
+    #
+    #     Re Nichole
+    #     Hill Ynez
+    #     CrystalAce
+    #     Matilda
+    #
+    # ---------------------------------------------------------
+
+    combined_player_pattern = re.compile(
+        r"^[^A-Za-z0-9]*"
+        r"[s$]"
+        r"(\d{1,3})"
+        r"\s*[.=]\s*"
+        r"(.+?)"
+        r"\s+"
+        r"(?="
+        r"has\s+completed\b"
+        r"|spent\s+Ingots\s+to\b"
+        r"|deleted\s+Task\b"
+        r")",
+        re.IGNORECASE,
+    )
+
+    server_only_pattern = re.compile(
+        r"^[^A-Za-z0-9]*"
+        r"s(\d{1,3})"
+        r"[^A-Za-z0-9]*$",
+        re.IGNORECASE,
+    )
+
+    def detect_combined_player(line: str):
+        match = combined_player_pattern.match(line)
+
+        if not match:
+            return None
+
+        server = int(match.group(1))
+        name = apply_alias(match.group(2))
+
+        print(
+            "DEBUG PLAYER DETECTED - COMBINED: "
+            f"server={server}, name={name!r}, "
+            f"raw_line={line!r}"
+        )
+
+        return {
+            "server_number": server,
+            "game_name": name,
+            "header_match": match,
+        }
+
+    # ---------------------------------------------------------
+    # Build logical OCR blocks
+    # ---------------------------------------------------------
+    #
+    # This is the biggest change.
+    #
+    # We do NOT assume that the player line itself defines the
+    # boundaries of a log entry.
+    #
+    # Instead:
+    #
+    #   timestamp
+    #   player/task text
+    #   timestamp
+    #   player/task text
+    #
+    # becomes separate blocks.
+    #
+    # We ALSO split whenever a new recognizable player header
+    # appears, because OCR sometimes destroys timestamps.
+    #
+    # This prevents an orphaned task from swallowing the next
+    # valid player entry.
+    # ---------------------------------------------------------
+
+    raw_lines = [
         line.strip()
         for line in text.splitlines()
         if line.strip()
     ]
 
     print("\nDEBUG CLEANED LINES:")
-    for index, line in enumerate(lines):
+
+    for index, line in enumerate(raw_lines):
         print(f"  [{index}] {repr(line)}")
 
-    print(f"\nDEBUG TOTAL CLEANED LINES: {len(lines)}")
+    print(
+        f"\nDEBUG TOTAL CLEANED LINES: {len(raw_lines)}"
+    )
 
-    entries = []
+    blocks = []
+
+    current_block = []
+
+    def flush_block():
+        nonlocal current_block
+
+        if current_block:
+            blocks.append(current_block)
+            current_block = []
 
     i = 0
 
-    while i < len(lines):
+    while i < len(raw_lines):
 
-        print("\n" + "-" * 70)
-        print(f"DEBUG LOOP: i={i}")
+        line = raw_lines[i]
 
-        line = lines[i]
-
-        print(f"DEBUG CURRENT LINE: {repr(line)}")
-
-        server_number = None
-        game_name = None
-        start_index = i
-        format_1_detected = False
-
-        # ---------------------------------------------------------
-        # IMPORTANT: Never treat timestamps or the footer as players.
-        # OCR sometimes mangles these lines, so check them BEFORE
-        # attempting player detection.
-        # ---------------------------------------------------------
-        possible_timestamp = re.match(
-            r"^[^a-zA-Z]*\d{2}[.,]\d{2}\s+\d{1,2}:\d{2}[^a-zA-Z0-9]*$",
-            line
-        )
-
-        possible_footer = re.match(
-            r"^[^a-zA-Z]*(?:keep|feep)\s+only\s+(?:the\s+)?latest\s+100\s+logs",
-            line,
-            re.IGNORECASE
-        )
-
-        if possible_timestamp:
+        # Timestamp separates log cards.
+        if is_timestamp(line):
             print(
-                f"DEBUG: Timestamp line - NEVER a player: {line!r}"
+                "DEBUG BLOCK SPLIT: timestamp "
+                f"{line!r}"
             )
+            flush_block()
             i += 1
             continue
 
-        if possible_footer:
+        # Footer ends the useful OCR.
+        if is_footer(line):
             print(
-                f"DEBUG: Footer line - NEVER a player: {line!r}"
+                "DEBUG BLOCK SPLIT: footer "
+                f"{line!r}"
             )
+            flush_block()
+            break
+
+        # A recognizable combined player starts a new block.
+        player = detect_combined_player(line)
+
+        if player:
+            if current_block:
+                print(
+                    "DEBUG BLOCK SPLIT: new player header "
+                    f"{line!r}"
+                )
+                flush_block()
+
+            current_block = [line]
             i += 1
             continue
 
-        # ---------------------------------------------------------
-        # Format 1: combined player header
-        #
-        # Normal OCR:
-        #   s29.Metp
-        #
-        # OCR-damaged examples:
-        #   , $2.Matilda
-        #   s38.fi=
-        #
-        # IMPORTANT:
-        # The line MUST contain an s/$ followed by a server number
-        # and a period/equivalent separator. This prevents timestamps
-        # such as "09.01 20:36" from becoming fake players.
-        # ---------------------------------------------------------
-        match = re.match(
-            r"^[^a-zA-Z0-9]*[s$](\d{1,3})\s*[.=]\s*([A-Za-z][A-Za-z0-9_-]*)",
-            line,
-            re.IGNORECASE
-        )
-
-        if match:
-            server_number = int(match.group(1))
-            game_name = match.group(2)
-            format_1_detected = True
-
-            print(
-                "DEBUG PLAYER DETECTED - FORMAT 1: "
-                f"server={server_number}, "
-                f"name={game_name!r}, "
-                f"raw_line={line!r}"
-            )
-
-            start_index = i
-
-        # ---------------------------------------------------------
-        # Format 2:
+        # Split-format server line:
         #
         # s29
         # Metp
         #
-        # Only accept an EXACT server-only line here.
-        # ---------------------------------------------------------
-        else:
-            server_match = re.match(
-                r"^[^a-zA-Z0-9]*s(\d{1,3})[^a-zA-Z0-9]*$",
-                line,
-                re.IGNORECASE
+        server_only = server_only_pattern.match(line)
+
+        if server_only and i + 1 < len(raw_lines):
+
+            possible_name = raw_lines[i + 1]
+
+            if (
+                not is_timestamp(possible_name)
+                and not is_footer(possible_name)
+                and not re.search(
+                    r"\bTask\s+\d+\s*:",
+                    possible_name,
+                    re.IGNORECASE,
+                )
+            ):
+                if current_block:
+                    flush_block()
+
+                server = int(server_only.group(1))
+                name = apply_alias(possible_name)
+
+                print(
+                    "DEBUG PLAYER DETECTED - SPLIT: "
+                    f"server={server}, name={name!r}"
+                )
+
+                current_block = [
+                    line,
+                    possible_name,
+                ]
+
+                i += 2
+                continue
+
+        current_block.append(line)
+        i += 1
+
+    flush_block()
+
+    print("\nDEBUG LOGICAL BLOCKS:")
+
+    for index, block in enumerate(blocks):
+        print(
+            f"  BLOCK {index}: "
+            f"{repr(' '.join(block))}"
+        )
+
+    # ---------------------------------------------------------
+    # Task regexes
+    # ---------------------------------------------------------
+    #
+    # OCR can insert garbage between:
+    #
+    #     Task 24:
+    #
+    # and:
+    #
+    #     Harvest
+    #
+    # It can even produce:
+    #
+    #     Task \ 24:
+    #
+    # So allow non-digit OCR noise before the task number.
+    # ---------------------------------------------------------
+
+    completed_pattern = re.compile(
+        r"has\s+completed\b"
+        r".*?"
+        r"\bTask\s*"
+        r"[^0-9]{0,8}"
+        r"(\d+)"
+        r"\s*:\s*"
+        r"[^A-Za-z]{0,12}"
+        r"Harvest(?:ed)?"
+        r"\s+"
+        r"(.+?)"
+        r"(?="
+        r"\s*,?\s*earning\b"
+        r"|\s*Competition\s+Points\b"
+        r"|$"
+        r")",
+        re.IGNORECASE,
+    )
+
+    # Fallback completed pattern for orphaned OCR where
+    # "has completed" was destroyed.
+    orphan_completed_pattern = re.compile(
+        r"\bTask\s*"
+        r"[^0-9]{0,8}"
+        r"(\d+)"
+        r"\s*:\s*"
+        r"[^A-Za-z]{0,12}"
+        r"Harvest(?:ed)?"
+        r"\s+"
+        r"(.+?)"
+        r"(?="
+        r"\s*,?\s*earning\b"
+        r"|\s*Competition\s+Points\b"
+        r"|$"
+        r")",
+        re.IGNORECASE,
+    )
+
+    upgrade_pattern = re.compile(
+        r"spent\s+Ingots\s+to"
+        r"\s*[\W_]*"
+        r"upgrade"
+        r"\s*"
+        r"\bTask\s*"
+        r"[^0-9]{0,8}"
+        r"(\d+)"
+        r"\s*:\s*"
+        r"(.+?)"
+        r"(?="
+        r"\s*\bearning\b"
+        r"|$"
+        r")",
+        re.IGNORECASE,
+    )
+
+    def extract_flower_from_upgrade(task_content: str):
+        """
+        Determine whether an upgrade task is a flower task.
+
+        Flower:
+            Harvest 560 Pink Snapdragon
+
+        Non-flower:
+            Upgrade any flower 5 times
+        """
+
+        match = re.search(
+            r"\bHarvest(?:ed)?\s+"
+            r"(.+?)"
+            r"[!.|\\»>_]*$",
+            task_content.strip(),
+            re.IGNORECASE,
+        )
+
+        if not match:
+            return None
+
+        return clean_flower_name(match.group(1))
+
+    # ---------------------------------------------------------
+    # Parse each logical block
+    # ---------------------------------------------------------
+
+    entries = []
+
+    for block_index, block in enumerate(blocks):
+
+        print("\n" + "-" * 70)
+        print(
+            f"DEBUG PARSING BLOCK {block_index}"
+        )
+
+        block_text = normalize_spaces(
+            " ".join(block)
+        )
+
+        print(
+            "DEBUG BLOCK TEXT:",
+            repr(block_text),
+        )
+
+        server_number = None
+        game_name = None
+        ocr_player = None
+
+        # -----------------------------------------------------
+        # Identify player from combined header
+        # -----------------------------------------------------
+
+        combined_player = detect_combined_player(
+            block[0]
+        )
+
+        if combined_player:
+
+            server_number = combined_player[
+                "server_number"
+            ]
+
+            game_name = combined_player[
+                "game_name"
+            ]
+
+            ocr_player = clean_player_name(
+                combined_player["header_match"].group(2)
             )
 
-            if server_match and i + 1 < len(lines):
-                possible_name = lines[i + 1]
+        # -----------------------------------------------------
+        # Identify player from split format
+        # -----------------------------------------------------
 
-                if (
-                    not re.match(
-                        r"^[^a-zA-Z0-9]*s\d{1,3}[^a-zA-Z0-9]*$",
-                        possible_name,
-                        re.IGNORECASE
-                    )
-                    and not re.match(
-                        r"^[^a-zA-Z]*\d{2}[.,]\d{2}\s+\d{1,2}:\d{2}[^a-zA-Z0-9]*$",
-                        possible_name
-                    )
-                ):
-                    server_number = int(server_match.group(1))
-                    game_name = possible_name
-                    start_index = i
+        elif (
+            len(block) >= 2
+            and server_only_pattern.match(block[0])
+        ):
+
+            server_match = server_only_pattern.match(
+                block[0]
+            )
+
+            server_number = int(
+                server_match.group(1)
+            )
+
+            ocr_player = clean_player_name(
+                block[1]
+            )
+
+            game_name = apply_alias(
+                ocr_player
+            )
+
+        # -----------------------------------------------------
+        # If no player was identified, preserve possible OCR
+        # player text for manual resolution later.
+        #
+        # Example:
+        #
+        #     pes eiuey has completed Advanced
+        #     Task 32: Harvest 600 Pomegranate Moon
+        #
+        # We do NOT pretend that "pes eiuey" is definitely Bluey.
+        # Instead we preserve it.
+        # -----------------------------------------------------
+
+        if game_name is None:
+
+            possible_orphan_player = re.search(
+                r"^(.+?)\s+"
+                r"(?="
+                r"has\s+completed\b"
+                r"|spent\s+Ingots\s+to\b"
+                r")",
+                block_text,
+                re.IGNORECASE,
+            )
+
+            if possible_orphan_player:
+
+                ocr_player = clean_player_name(
+                    possible_orphan_player.group(1)
+                )
+
+                aliased_player = apply_alias(
+                    ocr_player
+                )
+
+                if aliased_player != ocr_player:
+
+                    game_name = aliased_player
 
                     print(
-                        "DEBUG PLAYER DETECTED - FORMAT 2: "
-                        f"server={server_number}, "
-                        f"name={game_name!r}, "
-                        f"raw_server_line={line!r}"
-                    )
-
-        if server_number is None:
-
-            # ---------------------------------------------------------
-            # ORPHAN TASK DETECTION
-            #
-            # Sometimes OCR destroys the player's name/server number,
-            # but successfully reads the actual task.
-            #
-            # IMPORTANT:
-            # We care about finding the TASK, not proving who the
-            # player is. If we can identify a flower task but cannot
-            # identify the player, record:
-            #
-            #   <unknown player>
-            #
-            # Staff can manually assign the player later.
-            # ---------------------------------------------------------
-
-            print(
-                "DEBUG: No player detected - checking for orphan task"
-            )
-
-            orphan_lines = [lines[i]]
-            orphan_j = i + 1
-
-            while orphan_j < len(lines):
-
-                possible_server = re.match(
-                    r"^[^a-zA-Z0-9]*s\d{1,3}(?:\.|\s*$)",
-                    lines[orphan_j],
-                    re.IGNORECASE
-                )
-
-                possible_timestamp = re.match(
-                    r"^[^a-zA-Z]*\d{2}[.,]\d{2}\s+\d{1,2}:\d{2}",
-                    lines[orphan_j]
-                )
-
-                possible_footer = re.match(
-                    r"^[^a-zA-Z]*(?:keep|feep)\s+only\s+(?:the\s+)?latest\s+100\s+logs",
-                    lines[orphan_j],
-                    re.IGNORECASE
-                )
-
-                if possible_server or possible_timestamp or possible_footer:
-                    break
-
-                orphan_lines.append(lines[orphan_j])
-                orphan_j += 1
-
-            orphan_text = " ".join(orphan_lines)
-
-            print(
-                "DEBUG ORPHAN TEXT:",
-                repr(orphan_text)
-            )
-
-            # ---------------------------------------------------------
-            # Look for an orphaned FLOWER TASK.
-            #
-            # We deliberately search for the task itself rather than
-            # requiring the OCR around it to be perfect.
-            # ---------------------------------------------------------
-
-            orphan_task = re.search(
-                r"Task\s+(\d+)\s*:\s*Harvest\s+(.+)",
-                orphan_text,
-                re.IGNORECASE
-            )
-
-            if orphan_task:
-
-                orphan_task_number = int(
-                    orphan_task.group(1)
-                )
-
-                orphan_flower = orphan_task.group(2).strip()
-
-                print(
-                    "DEBUG ORPHAN FLOWER TASK FOUND: YES"
-                )
-
-                print(
-                    "DEBUG ORPHAN TASK NUMBER:",
-                    repr(orphan_task.group(1))
-                )
-
-                print(
-                    "DEBUG ORPHAN FLOWER RAW:",
-                    repr(orphan_flower)
-                )
-
-                # -----------------------------------------------------
-                # Remove OCR garbage that appears after the flower.
-                #
-                # Examples:
-                #   Pink Astilbe!!
-                #   Pink Astilbe!! OO 99.01 20:33
-                #   Pink Astilbe, earning Competition...
-                # -----------------------------------------------------
-
-                orphan_flower = re.split(
-                    r",\s*earning\b",
-                    orphan_flower,
-                    maxsplit=1,
-                    flags=re.IGNORECASE
-                )[0]
-
-                orphan_flower = re.sub(
-                    r"\s+O{1,3}\s*\d{2}[.,]\d{2}\s+\d{1,2}:\d{2}.*$",
-                    "",
-                    orphan_flower,
-                    flags=re.IGNORECASE
-                )
-
-                orphan_flower = orphan_flower.strip(
-                    " ,.;:'\"!"
-                )
-
-                print(
-                    "DEBUG ORPHAN FLOWER CLEANED:",
-                    repr(orphan_flower)
-                )
-
-                # -----------------------------------------------------
-                # Determine the action from the surrounding OCR.
-                #
-                # Upgrade:
-                #   spent Ingots to upgrade Task ##:
-                #
-                # Completed:
-                #   has completed ... Task ##:
-                # -----------------------------------------------------
-
-                orphan_upgrade = re.search(
-                    r"spent\s+Ingots\s+to\s*\|?\s*upgrade",
-                    orphan_text,
-                    re.IGNORECASE
-                )
-
-                orphan_completed = re.search(
-                    r"has\s+completed",
-                    orphan_text,
-                    re.IGNORECASE
-                )
-
-                if orphan_upgrade:
-
-                    orphan_action = "upgraded"
-
-                    print(
-                        "DEBUG ORPHAN ACTION: UPGRADED"
-                    )
-
-                elif orphan_completed:
-
-                    orphan_action = "completed"
-
-                    print(
-                        "DEBUG ORPHAN ACTION: COMPLETED"
+                        "DEBUG ORPHAN PLAYER ALIAS RESOLVED: "
+                        f"{ocr_player!r} -> "
+                        f"{game_name!r}"
                     )
 
                 else:
 
+                    game_name = "<unknown player>"
+
                     print(
-                        "DEBUG ORPHAN TASK FOUND, "
-                        "BUT ACTION COULD NOT BE DETERMINED"
+                        "DEBUG ORPHAN PLAYER: "
+                        f"{ocr_player!r}"
                     )
 
-                    i = orphan_j
-                    continue
+            else:
 
-                # -----------------------------------------------------
-                # Record the task with an unknown player.
-                # -----------------------------------------------------
-
-                entries.append({
-                    "server_number": None,
-                    "game_name": "<unknown player>",
-                    "action": orphan_action,
-                    "task_number": orphan_task_number,
-                    "task_text": orphan_flower,
-                    "competition_points": None,
-                    "competition_tokens": None,
-                    "is_flower": True,
-                })
+                game_name = "<unknown player>"
 
                 print(
-                    "DEBUG DECISION: ADDING UNKNOWN-PLAYER "
-                    f"FLOWER {orphan_action.upper()} ENTRY"
+                    "DEBUG ORPHAN PLAYER: "
+                    "no usable OCR player text"
                 )
 
-                i = orphan_j
-                continue
+        # -----------------------------------------------------
+        # COMPLETED FLOWER TASK
+        # -----------------------------------------------------
 
-            # ---------------------------------------------------------
-            # No recognizable orphan flower task.
-            # ---------------------------------------------------------
-
-            print(
-                "DEBUG: No player AND no orphan flower task detected."
-            )
-
-            i = orphan_j
-            continue
-
-        # ---------------------------------------------------------
-        # Gather this player's text until the next server entry.
-        #
-        # IMPORTANT:
-        # Use the format we ACTUALLY detected above.
-        #
-        # Do NOT inspect the OCR line again here. OCR may have
-        # mangled "s2.Matilda" into ", $2.Matilda", so checking
-        # whether the line literally starts with "s2." would
-        # incorrectly classify it as the split format.
-        # ---------------------------------------------------------
-
-        if format_1_detected:
-            print(
-                "DEBUG ENTRY FORMAT: combined (detected FORMAT 1)"
-            )
-
-            entry_lines = [lines[start_index]]
-            j = start_index + 1
-
-        else:
-            print(
-                "DEBUG ENTRY FORMAT: split (detected FORMAT 2)"
-            )
-
-            entry_lines = [game_name]
-            j = start_index + 2
-
-            print(
-                "DEBUG ENTRY FORMAT: split "
-                "(s## / Name)"
-            )
-
-        while j < len(lines):
-
-            possible_server = re.match(
-                r"^[^a-zA-Z0-9]*s\d{1,3}(?:\.|\s*$)",
-                lines[j],
-                re.IGNORECASE
-            )
-
-            possible_timestamp = re.match(
-                r"^[^a-zA-Z0-9]*\d{2}[.,]\d{2}\s+\d{1,2}:\d{2}[^a-zA-Z0-9]*$",
-                lines[j]
-            )
-
-            possible_footer = re.match(
-                r"^[^a-zA-Z]*(?:keep|feep)\s+only\s+(?:the\s+)?latest\s+100\s+logs",
-                lines[j],
-                re.IGNORECASE
-            )
-
-            if possible_server:
-                print(
-                    f"DEBUG ENTRY STOP: next server at line "
-                    f"{j}: {repr(lines[j])}"
-                )
-                break
-
-            if possible_timestamp:
-                print(
-                    f"DEBUG ENTRY STOP: timestamp at line "
-                    f"{j}: {repr(lines[j])}"
-                )
-                break
-
-            if possible_footer:
-                print(
-                    f"DEBUG ENTRY STOP: footer at line "
-                    f"{j}: {repr(lines[j])}"
-                )
-                break
-
-            print(
-                f"DEBUG ENTRY ADD LINE [{j}]: "
-                f"{repr(lines[j])}"
-            )
-
-            entry_lines.append(lines[j])
-            j += 1
-
-        entry_text = " ".join(entry_lines)
-
-        print("\nDEBUG COMPLETE ENTRY TEXT:")
-        print(repr(entry_text))
-
-        # ---------------------------------------------------------
-        # Check for completed task.
-        # ---------------------------------------------------------
-        print("\nDEBUG CHECKING COMPLETED TASK...")
-
-        completed = re.search(
-            r"has\s+completed\s+"
-            r"(?:Advanced\s+.*?)?"
-            r"Task\s+(\d+)\s*:\s*"
-            r"Harvest\s+(.+?)"
-            r"(?:,\s*earning\b|$)",
-            entry_text,
-            re.IGNORECASE
+        completed = completed_pattern.search(
+            block_text
         )
 
         if completed:
-            print("DEBUG COMPLETED MATCH: YES")
-            print(
-                f"DEBUG COMPLETED GROUP 1 "
-                f"(task number): {repr(completed.group(1))}"
-            )
-            print(
-                f"DEBUG COMPLETED GROUP 2 "
-                f"(flower): {repr(completed.group(2))}"
+
+            task_number = int(
+                completed.group(1)
             )
 
-            flower = completed.group(2).strip(
-                " ,.;:'\""
+            flower = clean_flower_name(
+                completed.group(2)
             )
 
             print(
-                f"DEBUG CLEANED COMPLETED FLOWER: "
-                f"{repr(flower)}"
+                "DEBUG COMPLETED MATCH: YES"
             )
 
-            entries.append({
+            print(
+                "DEBUG COMPLETED TASK:",
+                task_number,
+            )
+
+            print(
+                "DEBUG COMPLETED FLOWER:",
+                repr(flower),
+            )
+
+            entry = {
                 "server_number": server_number,
                 "game_name": game_name,
                 "action": "completed",
-                "task_number": int(completed.group(1)),
+                "task_number": task_number,
                 "task_text": flower,
                 "competition_points": None,
                 "competition_tokens": None,
                 "is_flower": True,
-            })
+            }
+
+            # Preserve OCR player text when it was unresolved.
+            if ocr_player:
+                entry["ocr_player"] = ocr_player
+
+            entries.append(entry)
 
             print(
-                "DEBUG DECISION: ADDING COMPLETED FLOWER ENTRY"
+                "DEBUG DECISION: "
+                "ADDING COMPLETED FLOWER ENTRY"
             )
 
-            i = j
             continue
 
-        print("DEBUG COMPLETED MATCH: NO")
-
-        # ---------------------------------------------------------
-        # Check whether this is ANY kind of upgrade.
-        #
-        # This lets us distinguish:
-        #
-        #   FLOWER UPGRADE
-        #   NON-FLOWER UPGRADE
-        #
-        # instead of silently ignoring the second category.
-        # ---------------------------------------------------------
-        print("\nDEBUG CHECKING FOR ANY UPGRADE...")
-
-        any_upgrade = re.search(
-            r"spent\s+Ingots\s+to\s*\|?\s*upgrade\s+"
-            r"Task\s+(\d+)\s*:\s*(.+)",
-            entry_text,
-            re.IGNORECASE
+        print(
+            "DEBUG COMPLETED MATCH: NO"
         )
 
-        if any_upgrade:
-            print("DEBUG ANY UPGRADE MATCH: YES")
+        # -----------------------------------------------------
+        # ORPHAN COMPLETED FLOWER
+        #
+        # This handles OCR like:
+        #
+        #     pes eiuey has completed Advanced
+        #     Task 32: Harvest 600 Pomegranate Moon
+        #
+        # where the player header is unusable.
+        # -----------------------------------------------------
+
+        orphan_completed = (
+            orphan_completed_pattern.search(
+                block_text
+            )
+        )
+
+        if (
+            orphan_completed
+            and game_name == "<unknown player>"
+        ):
+
+            task_number = int(
+                orphan_completed.group(1)
+            )
+
+            flower = clean_flower_name(
+                orphan_completed.group(2)
+            )
+
             print(
-                f"DEBUG UPGRADE TASK NUMBER: "
-                f"{repr(any_upgrade.group(1))}"
+                "DEBUG ORPHAN COMPLETED MATCH: YES"
             )
+
             print(
-                f"DEBUG UPGRADE TASK CONTENT: "
-                f"{repr(any_upgrade.group(2))}"
+                "DEBUG ORPHAN TASK:",
+                task_number,
             )
 
-            # -----------------------------------------------------
-            # Determine whether the upgraded task is a flower task.
-            #
-            # FLOWER:
-            #   Task ##: Harvest FLOWER
-            #
-            # NON-FLOWER:
-            #   Task ##: Upgrade any flower
-            #   Task ##: Buy something from VIP shop
-            #   etc.
-            # -----------------------------------------------------
-            flower_upgrade = re.search(
-                r"spent\s+Ingots\s+to\s*\|?\s*upgrade\s+"
-                r"Task\s+(\d+)\s*:\s*"
-                r"Harvest\s+(.+?)[!.]*$",
-                entry_text,
-                re.IGNORECASE
+            print(
+                "DEBUG ORPHAN FLOWER:",
+                repr(flower),
             )
 
-            if flower_upgrade:
-                print("DEBUG UPGRADE CATEGORY: 🌸 FLOWER")
+            entry = {
+                "server_number": None,
+                "game_name": "<unknown player>",
+                "action": "completed",
+                "task_number": task_number,
+                "task_text": flower,
+                "competition_points": None,
+                "competition_tokens": None,
+                "is_flower": True,
+            }
+
+            if ocr_player:
+                entry["ocr_player"] = ocr_player
+
+            entries.append(entry)
+
+            print(
+                "DEBUG DECISION: "
+                "ADDING UNKNOWN-PLAYER "
+                "FLOWER COMPLETED ENTRY"
+            )
+
+            continue
+
+        # -----------------------------------------------------
+        # ANY UPGRADE
+        #
+        # First identify that it is an upgrade.
+        # Then determine whether it is a flower upgrade.
+        # -----------------------------------------------------
+
+        upgrade = upgrade_pattern.search(
+            block_text
+        )
+
+        if upgrade:
+
+            task_number = int(
+                upgrade.group(1)
+            )
+
+            task_content = normalize_spaces(
+                upgrade.group(2)
+            )
+
+            print(
+                "DEBUG ANY UPGRADE MATCH: YES"
+            )
+
+            print(
+                "DEBUG UPGRADE TASK:",
+                task_number,
+            )
+
+            print(
+                "DEBUG UPGRADE CONTENT:",
+                repr(task_content),
+            )
+
+            flower = extract_flower_from_upgrade(
+                task_content
+            )
+
+            if flower:
+
                 print(
-                    f"DEBUG FLOWER UPGRADE TASK: "
-                    f"{repr(flower_upgrade.group(1))}"
-                )
-                print(
-                    f"DEBUG FLOWER UPGRADE NAME RAW: "
-                    f"{repr(flower_upgrade.group(2))}"
+                    "DEBUG UPGRADE CATEGORY: 🌸 FLOWER"
                 )
 
-                flower = flower_upgrade.group(2).strip(
-                    " ,.;:'\"!"
-                )
-
                 print(
-                    f"DEBUG FLOWER UPGRADE NAME CLEANED: "
-                    f"{repr(flower)}"
+                    "DEBUG UPGRADED FLOWER:",
+                    repr(flower),
                 )
 
-                entries.append({
+                entry = {
                     "server_number": server_number,
                     "game_name": game_name,
                     "action": "upgraded",
-                    "task_number": int(
-                        flower_upgrade.group(1)
-                    ),
+                    "task_number": task_number,
                     "task_text": flower,
                     "competition_points": None,
                     "competition_tokens": None,
                     "is_flower": True,
-                })
+                }
+
+                if ocr_player:
+                    entry["ocr_player"] = ocr_player
+
+                entries.append(entry)
 
                 print(
                     "DEBUG DECISION: "
                     "ADDING FLOWER UPGRADE ENTRY"
                 )
 
-                i = j
-                continue
-
             else:
+
                 print(
                     "DEBUG UPGRADE CATEGORY: "
                     "🚫 NOT A FLOWER"
                 )
+
                 print(
                     "DEBUG DECISION: "
                     "IGNORING NON-FLOWER UPGRADE"
                 )
 
-                # IMPORTANT:
-                # Move past this entry so the parser does not
-                # get stuck processing it forever.
-                i = j
-                continue
+            continue
 
-        else:
-            print("DEBUG ANY UPGRADE MATCH: NO")
-
-        # ---------------------------------------------------------
-        # No recognized task type.
-        # ---------------------------------------------------------
         print(
-            "DEBUG DECISION: "
-            "ENTRY DID NOT MATCH COMPLETED OR UPGRADED"
+            "DEBUG ANY UPGRADE MATCH: NO"
         )
 
-        # IMPORTANT:
-        # Always advance the parser.
-        i = j
+        print(
+            "DEBUG DECISION: "
+            "BLOCK DID NOT MATCH COMPLETED "
+            "OR FLOWER UPGRADE"
+        )
 
-    # -------------------------------------------------------------
-    # Remove exact duplicate OCR entries.
-    # -------------------------------------------------------------
+    # ---------------------------------------------------------
+    # Deduplication
+    # ---------------------------------------------------------
+
     print("\n" + "=" * 70)
     print("DEBUG DEDUPLICATION")
     print("=" * 70)
 
-    print(f"DEBUG ENTRIES BEFORE DEDUP: {len(entries)}")
+    print(
+        f"DEBUG ENTRIES BEFORE DEDUP: "
+        f"{len(entries)}"
+    )
 
     unique_entries = []
     seen = set()
@@ -945,26 +1176,39 @@ def parse_task_logs(text: str) -> list[dict]:
         )
 
         print(
-            f"DEBUG DEDUPE KEY: {repr(key)}"
+            "DEBUG DEDUPE KEY:",
+            repr(key),
         )
 
         if key not in seen:
+
             seen.add(key)
             unique_entries.append(entry)
 
-            print("DEBUG DEDUPE RESULT: KEEP")
+            print(
+                "DEBUG DEDUPE RESULT: KEEP"
+            )
 
         else:
-            print("DEBUG DEDUPE RESULT: REMOVE DUPLICATE")
+
+            print(
+                "DEBUG DEDUPE RESULT: "
+                "REMOVE DUPLICATE"
+            )
 
     print(
         f"DEBUG ENTRIES AFTER DEDUP: "
         f"{len(unique_entries)}"
     )
 
+    # ---------------------------------------------------------
+    # Final debug output
+    # ---------------------------------------------------------
+
     print("\nDEBUG FINAL ENTRIES:")
 
     for entry in unique_entries:
+
         print(
             f"  {entry['server_number']}."
             f"{entry['game_name']} | "
@@ -973,6 +1217,12 @@ def parse_task_logs(text: str) -> list[dict]:
             f"{entry['task_text']} | "
             f"is_flower={entry.get('is_flower')}"
         )
+
+        if entry.get("ocr_player"):
+            print(
+                "      OCR PLAYER:",
+                repr(entry["ocr_player"])
+            )
 
     print("\n" + "=" * 70)
     print("DEBUG PARSER END")
