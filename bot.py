@@ -349,19 +349,52 @@ def parse_task_logs(text: str) -> list[dict]:
         start_index = i
 
         # ---------------------------------------------------------
-        # Format 1: player header
+        # IMPORTANT: Never treat timestamps or the footer as players.
+        # OCR sometimes mangles these lines, so check them BEFORE
+        # attempting player detection.
+        # ---------------------------------------------------------
+        possible_timestamp = re.match(
+            r"^[^a-zA-Z]*\d{2}[.,]\d{2}\s+\d{1,2}:\d{2}[^a-zA-Z0-9]*$",
+            line
+        )
+
+        possible_footer = re.match(
+            r"^[^a-zA-Z]*(?:keep|feep)\s+only\s+(?:the\s+)?latest\s+100\s+logs",
+            line,
+            re.IGNORECASE
+        )
+
+        if possible_timestamp:
+            print(
+                f"DEBUG: Timestamp line - NEVER a player: {line!r}"
+            )
+            i += 1
+            continue
+
+        if possible_footer:
+            print(
+                f"DEBUG: Footer line - NEVER a player: {line!r}"
+            )
+            i += 1
+            continue
+
+        # ---------------------------------------------------------
+        # Format 1: combined player header
         #
-        # OCR may distort the beginning of the header:
-        #
+        # Normal OCR:
         #   s29.Metp
-        #   , $2.Matilda
-        #   . $38.44=
         #
-        # So we allow junk before the server number and allow
-        # the leading "s" to be recognized as "s", "$", or missing.
+        # OCR-damaged examples:
+        #   , $2.Matilda
+        #   s38.fi=
+        #
+        # IMPORTANT:
+        # The line MUST contain an s/$ followed by a server number
+        # and a period/equivalent separator. This prevents timestamps
+        # such as "09.01 20:36" from becoming fake players.
         # ---------------------------------------------------------
         match = re.match(
-            r"^[^a-zA-Z0-9]*(?:s|\$)(\d{1,3})\s*\.\s*(\S+)",
+            r"^[^a-zA-Z0-9]*[s$](\d{1,3})\s*[.=]\s*([A-Za-z][A-Za-z0-9_-]*)",
             line,
             re.IGNORECASE
         )
@@ -371,65 +404,58 @@ def parse_task_logs(text: str) -> list[dict]:
             game_name = match.group(2)
 
             print(
-                "DEBUG PLAYER DETECTED - FORMAT 1:",
-                f"server={server_number},",
-                f"name={game_name!r},",
+                "DEBUG PLAYER DETECTED - FORMAT 1: "
+                f"server={server_number}, "
+                f"name={game_name!r}, "
                 f"raw_line={line!r}"
             )
+
+            start_index = i
 
         # ---------------------------------------------------------
         # Format 2:
         #
         # s29
         # Metp
+        #
+        # Only accept an EXACT server-only line here.
         # ---------------------------------------------------------
         else:
             server_match = re.match(
-                r"^s(\d{1,3})$",
+                r"^[^a-zA-Z0-9]*s(\d{1,3})[^a-zA-Z0-9]*$",
                 line,
                 re.IGNORECASE
             )
 
-            if server_match:
-                print(
-                    f"DEBUG POSSIBLE FORMAT 2 SERVER LINE: "
-                    f"{repr(line)}"
-                )
-
             if server_match and i + 1 < len(lines):
                 possible_name = lines[i + 1]
 
-                print(
-                    f"DEBUG POSSIBLE PLAYER NAME: "
-                    f"{repr(possible_name)}"
-                )
-
-                if not re.match(
-                    r"^s\d{1,3}(?:\.|\s*$)",
-                    possible_name,
-                    re.IGNORECASE
+                if (
+                    not re.match(
+                        r"^[^a-zA-Z0-9]*s\d{1,3}[^a-zA-Z0-9]*$",
+                        possible_name,
+                        re.IGNORECASE
+                    )
+                    and not re.match(
+                        r"^[^a-zA-Z]*\d{2}[.,]\d{2}\s+\d{1,2}:\d{2}[^a-zA-Z0-9]*$",
+                        possible_name
+                    )
                 ):
                     server_number = int(server_match.group(1))
                     game_name = possible_name
                     start_index = i
 
                     print(
-                        f"DEBUG PLAYER DETECTED - FORMAT 2: "
+                        "DEBUG PLAYER DETECTED - FORMAT 2: "
                         f"server={server_number}, "
-                        f"name={repr(game_name)}, "
-                        f"start_index={start_index}"
-                    )
-                else:
-                    print(
-                        "DEBUG FORMAT 2 REJECTED: "
-                        "next line also looks like a server."
+                        f"name={game_name!r}, "
+                        f"raw_server_line={line!r}"
                     )
 
-        # ---------------------------------------------------------
-        # Not a player entry.
-        # ---------------------------------------------------------
         if server_number is None:
-            print("DEBUG: No player detected on this line.")
+            print(
+                "DEBUG: No player detected on this line."
+            )
             i += 1
             continue
 
