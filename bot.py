@@ -302,15 +302,47 @@ def parse_task_logs(text: str) -> list[dict]:
     - s29
       Metp
       has completed...
+
+    Also detects:
+    - Flower task upgrades:
+      spent Ingots to upgrade Task 48: Harvest 560 Pink Snapdragon!!
+    - Non-flower upgrades are intentionally ignored.
     """
 
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    print("\n" + "=" * 70)
+    print("DEBUG PARSER START")
+    print("=" * 70)
+
+    print("DEBUG RAW INPUT:")
+    print(repr(text))
+
+    # ---------------------------------------------------------
+    # Clean OCR into usable lines.
+    # ---------------------------------------------------------
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip()
+    ]
+
+    print("\nDEBUG CLEANED LINES:")
+    for index, line in enumerate(lines):
+        print(f"  [{index}] {repr(line)}")
+
+    print(f"\nDEBUG TOTAL CLEANED LINES: {len(lines)}")
+
     entries = []
 
     i = 0
 
     while i < len(lines):
+
+        print("\n" + "-" * 70)
+        print(f"DEBUG LOOP: i={i}")
+
         line = lines[i]
+
+        print(f"DEBUG CURRENT LINE: {repr(line)}")
 
         server_number = None
         game_name = None
@@ -329,8 +361,16 @@ def parse_task_logs(text: str) -> list[dict]:
             server_number = int(match.group(1))
             game_name = match.group(2)
 
+            print(
+                f"DEBUG PLAYER DETECTED - FORMAT 1: "
+                f"server={server_number}, "
+                f"name={repr(game_name)}, "
+                f"start_index={start_index}"
+            )
+
         # ---------------------------------------------------------
         # Format 2:
+        #
         # s29
         # Metp
         # ---------------------------------------------------------
@@ -341,8 +381,19 @@ def parse_task_logs(text: str) -> list[dict]:
                 re.IGNORECASE
             )
 
+            if server_match:
+                print(
+                    f"DEBUG POSSIBLE FORMAT 2 SERVER LINE: "
+                    f"{repr(line)}"
+                )
+
             if server_match and i + 1 < len(lines):
                 possible_name = lines[i + 1]
+
+                print(
+                    f"DEBUG POSSIBLE PLAYER NAME: "
+                    f"{repr(possible_name)}"
+                )
 
                 if not re.match(
                     r"^s\d{1,3}(?:\.|\s*$)",
@@ -353,28 +404,52 @@ def parse_task_logs(text: str) -> list[dict]:
                     game_name = possible_name
                     start_index = i
 
+                    print(
+                        f"DEBUG PLAYER DETECTED - FORMAT 2: "
+                        f"server={server_number}, "
+                        f"name={repr(game_name)}, "
+                        f"start_index={start_index}"
+                    )
+                else:
+                    print(
+                        "DEBUG FORMAT 2 REJECTED: "
+                        "next line also looks like a server."
+                    )
+
+        # ---------------------------------------------------------
+        # Not a player entry.
+        # ---------------------------------------------------------
         if server_number is None:
+            print("DEBUG: No player detected on this line.")
             i += 1
             continue
 
         # ---------------------------------------------------------
-        # Gather this player's text until the next server entry.
+        # Gather this player's text until the next server entry,
+        # timestamp, or footer.
         # ---------------------------------------------------------
         if lines[start_index].lower().startswith(
             f"s{server_number}.".lower()
         ):
             entry_lines = [lines[start_index]]
+            j = start_index + 1
+
+            print(
+                "DEBUG ENTRY FORMAT: combined "
+                "(s##.Name)"
+            )
+
         else:
             entry_lines = [game_name]
-
-        if lines[start_index].lower().startswith(
-            f"s{server_number}.".lower()
-        ):
-            j = start_index + 1
-        else:
             j = start_index + 2
 
+            print(
+                "DEBUG ENTRY FORMAT: split "
+                "(s## / Name)"
+            )
+
         while j < len(lines):
+
             possible_server = re.match(
                 r"^[^a-zA-Z0-9]*s\d{1,3}(?:\.|\s*$)",
                 lines[j],
@@ -390,26 +465,47 @@ def parse_task_logs(text: str) -> list[dict]:
                 r"^[^a-zA-Z]*(?:keep|feep)\s+only\s+(?:the\s+)?latest\s+100\s+logs",
                 lines[j],
                 re.IGNORECASE
-            )    
-            
-            if possible_server or possible_timestamp or possible_footer:
+            )
+
+            if possible_server:
+                print(
+                    f"DEBUG ENTRY STOP: next server at line "
+                    f"{j}: {repr(lines[j])}"
+                )
                 break
+
+            if possible_timestamp:
+                print(
+                    f"DEBUG ENTRY STOP: timestamp at line "
+                    f"{j}: {repr(lines[j])}"
+                )
+                break
+
+            if possible_footer:
+                print(
+                    f"DEBUG ENTRY STOP: footer at line "
+                    f"{j}: {repr(lines[j])}"
+                )
+                break
+
+            print(
+                f"DEBUG ENTRY ADD LINE [{j}]: "
+                f"{repr(lines[j])}"
+            )
 
             entry_lines.append(lines[j])
             j += 1
 
         entry_text = " ".join(entry_lines)
 
-        print("DEBUG ENTRY:", repr(entry_text))
+        print("\nDEBUG COMPLETE ENTRY TEXT:")
+        print(repr(entry_text))
 
         # ---------------------------------------------------------
-        # Completed task
-        #
-        # We only care about:
-        #   has completed [Advanced] Task ##: Harvest FLOWER
-        #
-        # Everything after the flower is ignored.
+        # Check for completed task.
         # ---------------------------------------------------------
+        print("\nDEBUG CHECKING COMPLETED TASK...")
+
         completed = re.search(
             r"has\s+completed\s+"
             r"(?:Advanced\s+.*?)?"
@@ -421,7 +517,24 @@ def parse_task_logs(text: str) -> list[dict]:
         )
 
         if completed:
-            flower = completed.group(2).strip(" ,.;:'\"")
+            print("DEBUG COMPLETED MATCH: YES")
+            print(
+                f"DEBUG COMPLETED GROUP 1 "
+                f"(task number): {repr(completed.group(1))}"
+            )
+            print(
+                f"DEBUG COMPLETED GROUP 2 "
+                f"(flower): {repr(completed.group(2))}"
+            )
+
+            flower = completed.group(2).strip(
+                " ,.;:'\""
+            )
+
+            print(
+                f"DEBUG CLEANED COMPLETED FLOWER: "
+                f"{repr(flower)}"
+            )
 
             entries.append({
                 "server_number": server_number,
@@ -434,48 +547,150 @@ def parse_task_logs(text: str) -> list[dict]:
                 "is_flower": True,
             })
 
+            print(
+                "DEBUG DECISION: ADDING COMPLETED FLOWER ENTRY"
+            )
+
             i = j
             continue
 
+        print("DEBUG COMPLETED MATCH: NO")
+
         # ---------------------------------------------------------
-        # Upgraded task
+        # Check whether this is ANY kind of upgrade.
+        #
+        # This lets us distinguish:
+        #
+        #   FLOWER UPGRADE
+        #   NON-FLOWER UPGRADE
+        #
+        # instead of silently ignoring the second category.
         # ---------------------------------------------------------
-        # We only care about upgraded tasks that are flower tasks.
-        #
-        # Flower task format:
-        # spent Ingots to upgrade Task ##: Harvest FLOWER!!
-        #
-        # Other upgraded tasks (Upgrade any flower, VIP shop, etc.)
-        # are intentionally ignored.
-        upgraded = re.search(
+        print("\nDEBUG CHECKING FOR ANY UPGRADE...")
+
+        any_upgrade = re.search(
             r"spent\s+Ingots\s+to\s+upgrade\s+"
-            r"Task\s+(\d+)\s*:\s*"
-            r"Harvest\s+(.+?)[!.]*$",
+            r"Task\s+(\d+)\s*:\s*(.+)",
             entry_text,
             re.IGNORECASE
         )
 
-        if upgraded:
-            entries.append({
-                "server_number": server_number,
-                "game_name": game_name,
-                "action": "upgraded",
-                "task_number": int(upgraded.group(1)),
-                "task_text": upgraded.group(2).strip(),
-                "competition_points": None,
-                "competition_tokens": None,
-            })
+        if any_upgrade:
+            print("DEBUG ANY UPGRADE MATCH: YES")
+            print(
+                f"DEBUG UPGRADE TASK NUMBER: "
+                f"{repr(any_upgrade.group(1))}"
+            )
+            print(
+                f"DEBUG UPGRADE TASK CONTENT: "
+                f"{repr(any_upgrade.group(2))}"
+            )
 
-            i = j
-            continue
+            # -----------------------------------------------------
+            # Determine whether the upgraded task is a flower task.
+            #
+            # FLOWER:
+            #   Task ##: Harvest FLOWER
+            #
+            # NON-FLOWER:
+            #   Task ##: Upgrade any flower
+            #   Task ##: Buy something from VIP shop
+            #   etc.
+            # -----------------------------------------------------
+            flower_upgrade = re.search(
+                r"spent\s+Ingots\s+to\s+upgrade\s+"
+                r"Task\s+(\d+)\s*:\s*"
+                r"Harvest\s+(.+?)[!.]*$",
+                entry_text,
+                re.IGNORECASE
+            )
+
+            if flower_upgrade:
+                print("DEBUG UPGRADE CATEGORY: 🌸 FLOWER")
+                print(
+                    f"DEBUG FLOWER UPGRADE TASK: "
+                    f"{repr(flower_upgrade.group(1))}"
+                )
+                print(
+                    f"DEBUG FLOWER UPGRADE NAME RAW: "
+                    f"{repr(flower_upgrade.group(2))}"
+                )
+
+                flower = flower_upgrade.group(2).strip(
+                    " ,.;:'\"!"
+                )
+
+                print(
+                    f"DEBUG FLOWER UPGRADE NAME CLEANED: "
+                    f"{repr(flower)}"
+                )
+
+                entries.append({
+                    "server_number": server_number,
+                    "game_name": game_name,
+                    "action": "upgraded",
+                    "task_number": int(
+                        flower_upgrade.group(1)
+                    ),
+                    "task_text": flower,
+                    "competition_points": None,
+                    "competition_tokens": None,
+                    "is_flower": True,
+                })
+
+                print(
+                    "DEBUG DECISION: "
+                    "ADDING FLOWER UPGRADE ENTRY"
+                )
+
+                i = j
+                continue
+
+            else:
+                print(
+                    "DEBUG UPGRADE CATEGORY: "
+                    "🚫 NOT A FLOWER"
+                )
+                print(
+                    "DEBUG DECISION: "
+                    "IGNORING NON-FLOWER UPGRADE"
+                )
+
+                # IMPORTANT:
+                # Move past this entry so the parser does not
+                # get stuck processing it forever.
+                i = j
+                continue
+
+        else:
+            print("DEBUG ANY UPGRADE MATCH: NO")
+
+        # ---------------------------------------------------------
+        # No recognized task type.
+        # ---------------------------------------------------------
+        print(
+            "DEBUG DECISION: "
+            "ENTRY DID NOT MATCH COMPLETED OR UPGRADED"
+        )
+
+        # IMPORTANT:
+        # Always advance the parser.
+        i = j
 
     # -------------------------------------------------------------
     # Remove exact duplicate OCR entries.
     # -------------------------------------------------------------
+    print("\n" + "=" * 70)
+    print("DEBUG DEDUPLICATION")
+    print("=" * 70)
+
+    print(f"DEBUG ENTRIES BEFORE DEDUP: {len(entries)}")
+
     unique_entries = []
     seen = set()
 
     for entry in entries:
+
         key = (
             entry["server_number"],
             entry["game_name"].lower(),
@@ -484,9 +699,39 @@ def parse_task_logs(text: str) -> list[dict]:
             entry["task_text"].lower(),
         )
 
+        print(
+            f"DEBUG DEDUPE KEY: {repr(key)}"
+        )
+
         if key not in seen:
             seen.add(key)
             unique_entries.append(entry)
+
+            print("DEBUG DEDUPE RESULT: KEEP")
+
+        else:
+            print("DEBUG DEDUPE RESULT: REMOVE DUPLICATE")
+
+    print(
+        f"DEBUG ENTRIES AFTER DEDUP: "
+        f"{len(unique_entries)}"
+    )
+
+    print("\nDEBUG FINAL ENTRIES:")
+
+    for entry in unique_entries:
+        print(
+            f"  {entry['server_number']}."
+            f"{entry['game_name']} | "
+            f"{entry['action']} | "
+            f"Task {entry['task_number']} | "
+            f"{entry['task_text']} | "
+            f"is_flower={entry.get('is_flower')}"
+        )
+
+    print("\n" + "=" * 70)
+    print("DEBUG PARSER END")
+    print("=" * 70 + "\n")
 
     return unique_entries
 
@@ -2178,7 +2423,7 @@ async def testtaskparse(
         crop.save(crop_path)
 
         ocr_text = await ocr_image(crop_path)
-        entries = parse_task_logs(ocr_text)
+        entries, debug_log = parse_task_logs(ocr_text, debug=True)
 
         debug_lines = [
             f"`{line}`"
@@ -2202,11 +2447,14 @@ async def testtaskparse(
                 f"**s{entry['server_number']}.{entry['game_name']}** "
                 f"→ {entry['action']} Task {entry['task_number']}: "
                 f"{entry['task_text']}"
-                f"→ 🌸 FLOWER"
             )
 
+        lines.append("")
+        lines.append("🧪 **PARSER DEBUG:**")
+        lines.extend(f"`{line}`" for line in debug_log)
+
         await interaction.followup.send(
-            "\n".join(lines),
+            "\n".join(lines)[:1900],
             ephemeral=True
         )
 
