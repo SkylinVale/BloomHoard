@@ -434,10 +434,17 @@ def parse_task_logs(text: str) -> list[dict]:
         # ---------------------------------------------------------
         # Upgraded task
         # ---------------------------------------------------------
+        # We only care about upgraded tasks that are flower tasks.
+        #
+        # Flower task format:
+        # spent Ingots to upgrade Task ##: Harvest FLOWER!!
+        #
+        # Other upgraded tasks (Upgrade any flower, VIP shop, etc.)
+        # are intentionally ignored.
         upgraded = re.search(
             r"spent\s+Ingots\s+to\s+upgrade\s+"
             r"Task\s+(\d+)\s*:\s*"
-            r"Harvest\s+(.+?)(?:!!|!|\.)?$",
+            r"Harvest\s+(.+?)[!.]*$",
             entry_text,
             re.IGNORECASE
         )
@@ -451,13 +458,10 @@ def parse_task_logs(text: str) -> list[dict]:
                 "task_text": upgraded.group(2).strip(),
                 "competition_points": None,
                 "competition_tokens": None,
-                "is_flower": True,
             })
 
             i = j
             continue
-
-        i = j
 
     # -------------------------------------------------------------
     # Remove exact duplicate OCR entries.
