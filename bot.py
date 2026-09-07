@@ -395,7 +395,6 @@ def parse_task_logs(text: str) -> list[dict]:
         entry_text = " ".join(entry_lines)
 
         print("DEBUG ENTRY:", repr(entry_text))
-        entries = parse_task_logs(ocr_text)
 
         # ---------------------------------------------------------
         # Completed task
