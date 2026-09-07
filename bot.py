@@ -781,24 +781,26 @@ def parse_task_logs(
     # ---------------------------------------------------------
     # UPGRADE PATTERN
     #
-    # IMPORTANT FIX:
+    # OCR can insert punctuation, stray characters, or spaces
+    # between any of these pieces:
     #
-    # OCR frequently inserts punctuation between "upgrade"
-    # and "Task":
+    #     spent Ingots to upgrade Task 60
+    #     spent Ingots to upgrade , Task 12
+    #     spent Ingots to L upgrade | Task 7
+    #     . $38.44= spent Ingots to upgrade , Task 12
     #
-    #     upgrade Task 60
-    #     upgrade : Task 60
-    #     upgrade , Task 12
-    #     upgrade | Task 12
+    # We only care that the block contains the recognizable
+    # sequence:
     #
-    # So allow arbitrary OCR punctuation there.
+    #     spent Ingots to ... upgrade ... Task <number>:
+    #
     # ---------------------------------------------------------
 
     upgrade_pattern = re.compile(
         r"spent\s+Ingots\s+to"
-        r"\s*"
-        r"upgrade"
-        r"[\W_]*"
+        r".*?"
+        r"\bupgrade\b"
+        r"[\s\W_]*"
         r"\bTask\s*"
         r"[^0-9]{0,8}"
         r"(\d+)"
@@ -807,7 +809,7 @@ def parse_task_logs(
         r"(?=$|\s{2,})",
         re.IGNORECASE,
     )
-
+    
     def extract_flower_from_upgrade(task_content: str):
         """
         Determine whether an upgrade task is a flower task.
