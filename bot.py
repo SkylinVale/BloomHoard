@@ -462,15 +462,19 @@ def parse_task_logs(text: str) -> list[dict]:
             # Sometimes OCR destroys the player's name/server number,
             # but successfully reads the actual task.
             #
-            # Example:
-            #   . $38.44= spent Ingots to upgrade
-            #   , Task 12: Harvest 560 Pink Astilbe!!
+            # IMPORTANT:
+            # We care about finding the TASK, not proving who the
+            # player is. If we can identify a flower task but cannot
+            # identify the player, record:
             #
-            # Don't throw this task away. Record it as <unknown player>
-            # so staff can manually assign the player later.
+            #   <unknown player>
+            #
+            # Staff can manually assign the player later.
             # ---------------------------------------------------------
 
-            print("DEBUG: No player detected - checking for orphan task")
+            print(
+                "DEBUG: No player detected - checking for orphan task"
+            )
 
             orphan_lines = [lines[i]]
             orphan_j = i + 1
@@ -508,93 +512,152 @@ def parse_task_logs(text: str) -> list[dict]:
             )
 
             # ---------------------------------------------------------
-            # Check for an orphaned UPGRADED task.
+            # Look for an orphaned FLOWER TASK.
+            #
+            # We deliberately search for the task itself rather than
+            # requiring the OCR around it to be perfect.
             # ---------------------------------------------------------
 
-            orphan_upgrade = re.search(
-                r"spent\s+Ingots\s+to\s*\|?\s*upgrade\s+"
-                r"Task\s+(\d+)\s*:\s*(.+)",
+            orphan_task = re.search(
+                r"Task\s+(\d+)\s*:\s*Harvest\s+(.+)",
                 orphan_text,
                 re.IGNORECASE
             )
 
-            if orphan_upgrade:
+            if orphan_task:
 
-                print("DEBUG ORPHAN UPGRADE MATCH: YES")
+                orphan_task_number = int(
+                    orphan_task.group(1)
+                )
 
-                orphan_task_number = int(orphan_upgrade.group(1))
-                orphan_task_content = orphan_upgrade.group(2).strip()
+                orphan_flower = orphan_task.group(2).strip()
 
                 print(
-                    "DEBUG ORPHAN UPGRADE TASK NUMBER:",
-                    repr(orphan_upgrade.group(1))
+                    "DEBUG ORPHAN FLOWER TASK FOUND: YES"
                 )
 
                 print(
-                    "DEBUG ORPHAN UPGRADE CONTENT:",
-                    repr(orphan_task_content)
+                    "DEBUG ORPHAN TASK NUMBER:",
+                    repr(orphan_task.group(1))
+                )
+
+                print(
+                    "DEBUG ORPHAN FLOWER RAW:",
+                    repr(orphan_flower)
                 )
 
                 # -----------------------------------------------------
-                # Determine whether this orphaned upgrade is a flower.
+                # Remove OCR garbage that appears after the flower.
+                #
+                # Examples:
+                #   Pink Astilbe!!
+                #   Pink Astilbe!! OO 99.01 20:33
+                #   Pink Astilbe, earning Competition...
                 # -----------------------------------------------------
 
-                orphan_flower = re.search(
-                    r"Harvest\s+(.+?)[!.]*$",
-                    orphan_task_content,
+                orphan_flower = re.split(
+                    r",\s*earning\b",
+                    orphan_flower,
+                    maxsplit=1,
+                    flags=re.IGNORECASE
+                )[0]
+
+                orphan_flower = re.sub(
+                    r"\s+O{1,3}\s*\d{2}[.,]\d{2}\s+\d{1,2}:\d{2}.*$",
+                    "",
+                    orphan_flower,
+                    flags=re.IGNORECASE
+                )
+
+                orphan_flower = orphan_flower.strip(
+                    " ,.;:'\"!"
+                )
+
+                print(
+                    "DEBUG ORPHAN FLOWER CLEANED:",
+                    repr(orphan_flower)
+                )
+
+                # -----------------------------------------------------
+                # Determine the action from the surrounding OCR.
+                #
+                # Upgrade:
+                #   spent Ingots to upgrade Task ##:
+                #
+                # Completed:
+                #   has completed ... Task ##:
+                # -----------------------------------------------------
+
+                orphan_upgrade = re.search(
+                    r"spent\s+Ingots\s+to\s*\|?\s*upgrade",
+                    orphan_text,
                     re.IGNORECASE
                 )
 
-                if orphan_flower:
+                orphan_completed = re.search(
+                    r"has\s+completed",
+                    orphan_text,
+                    re.IGNORECASE
+                )
 
-                    flower_name = orphan_flower.group(1).strip(
-                        " ,.;:'\"!"
-                    )
+                if orphan_upgrade:
 
-                    print(
-                        "DEBUG ORPHAN UPGRADE CATEGORY: 🌸 FLOWER"
-                    )
-
-                    print(
-                        "DEBUG ORPHAN FLOWER NAME:",
-                        repr(flower_name)
-                    )
-
-                    entries.append({
-                        "server_number": None,
-                        "game_name": "<unknown player>",
-                        "action": "upgraded",
-                        "task_number": orphan_task_number,
-                        "task_text": flower_name,
-                        "competition_points": None,
-                        "competition_tokens": None,
-                        "is_flower": True,
-                    })
+                    orphan_action = "upgraded"
 
                     print(
-                        "DEBUG DECISION: ADDING UNKNOWN-PLAYER "
-                        "FLOWER UPGRADE"
+                        "DEBUG ORPHAN ACTION: UPGRADED"
+                    )
+
+                elif orphan_completed:
+
+                    orphan_action = "completed"
+
+                    print(
+                        "DEBUG ORPHAN ACTION: COMPLETED"
                     )
 
                 else:
 
                     print(
-                        "DEBUG ORPHAN UPGRADE CATEGORY: "
-                        "🚫 NOT A FLOWER"
+                        "DEBUG ORPHAN TASK FOUND, "
+                        "BUT ACTION COULD NOT BE DETERMINED"
                     )
+
+                    i = orphan_j
+                    continue
+
+                # -----------------------------------------------------
+                # Record the task with an unknown player.
+                # -----------------------------------------------------
+
+                entries.append({
+                    "server_number": None,
+                    "game_name": "<unknown player>",
+                    "action": orphan_action,
+                    "task_number": orphan_task_number,
+                    "task_text": orphan_flower,
+                    "competition_points": None,
+                    "competition_tokens": None,
+                    "is_flower": True,
+                })
+
+                print(
+                    "DEBUG DECISION: ADDING UNKNOWN-PLAYER "
+                    f"FLOWER {orphan_action.upper()} ENTRY"
+                )
 
                 i = orphan_j
                 continue
 
             # ---------------------------------------------------------
-            # No recognizable orphan task.
+            # No recognizable orphan flower task.
             # ---------------------------------------------------------
 
             print(
-                "DEBUG: No player AND no orphan task detected."
+                "DEBUG: No player AND no orphan flower task detected."
             )
 
-            i += 1
+            i = orphan_j
             continue
 
         # ---------------------------------------------------------
