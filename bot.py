@@ -349,10 +349,19 @@ def parse_task_logs(text: str) -> list[dict]:
         start_index = i
 
         # ---------------------------------------------------------
-        # Format 1: s29.Metp
+        # Format 1: player header
+        #
+        # OCR may distort the beginning of the header:
+        #
+        #   s29.Metp
+        #   , $2.Matilda
+        #   . $38.44=
+        #
+        # So we allow junk before the server number and allow
+        # the leading "s" to be recognized as "s", "$", or missing.
         # ---------------------------------------------------------
         match = re.match(
-            r"^[^a-zA-Z0-9]*s(\d{1,3})\s*\.\s*(\S+)",
+            r"^[^a-zA-Z0-9]*(?:s|\$)?(\d{1,3})\s*\.\s*(\S+)",
             line,
             re.IGNORECASE
         )
@@ -362,10 +371,10 @@ def parse_task_logs(text: str) -> list[dict]:
             game_name = match.group(2)
 
             print(
-                f"DEBUG PLAYER DETECTED - FORMAT 1: "
-                f"server={server_number}, "
-                f"name={repr(game_name)}, "
-                f"start_index={start_index}"
+                "DEBUG PLAYER DETECTED - FORMAT 1:",
+                f"server={server_number},",
+                f"name={game_name!r},",
+                f"raw_line={line!r}"
             )
 
         # ---------------------------------------------------------
