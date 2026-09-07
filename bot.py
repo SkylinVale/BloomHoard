@@ -455,9 +455,145 @@ def parse_task_logs(text: str) -> list[dict]:
                     )
 
         if server_number is None:
+
+            # ---------------------------------------------------------
+            # ORPHAN TASK DETECTION
+            #
+            # Sometimes OCR destroys the player's name/server number,
+            # but successfully reads the actual task.
+            #
+            # Example:
+            #   . $38.44= spent Ingots to upgrade
+            #   , Task 12: Harvest 560 Pink Astilbe!!
+            #
+            # Don't throw this task away. Record it as <unknown player>
+            # so staff can manually assign the player later.
+            # ---------------------------------------------------------
+
+            print("DEBUG: No player detected - checking for orphan task")
+
+            orphan_lines = [lines[i]]
+            orphan_j = i + 1
+
+            while orphan_j < len(lines):
+
+                possible_server = re.match(
+                    r"^[^a-zA-Z0-9]*s\d{1,3}(?:\.|\s*$)",
+                    lines[orphan_j],
+                    re.IGNORECASE
+                )
+
+                possible_timestamp = re.match(
+                    r"^[^a-zA-Z]*\d{2}[.,]\d{2}\s+\d{1,2}:\d{2}",
+                    lines[orphan_j]
+                )
+
+                possible_footer = re.match(
+                    r"^[^a-zA-Z]*(?:keep|feep)\s+only\s+(?:the\s+)?latest\s+100\s+logs",
+                    lines[orphan_j],
+                    re.IGNORECASE
+                )
+
+                if possible_server or possible_timestamp or possible_footer:
+                    break
+
+                orphan_lines.append(lines[orphan_j])
+                orphan_j += 1
+
+            orphan_text = " ".join(orphan_lines)
+
             print(
-                "DEBUG: No player detected on this line."
+                "DEBUG ORPHAN TEXT:",
+                repr(orphan_text)
             )
+
+            # ---------------------------------------------------------
+            # Check for an orphaned UPGRADED task.
+            # ---------------------------------------------------------
+
+            orphan_upgrade = re.search(
+                r"spent\s+Ingots\s+to\s*\|?\s*upgrade\s+"
+                r"Task\s+(\d+)\s*:\s*(.+)",
+                orphan_text,
+                re.IGNORECASE
+            )
+
+            if orphan_upgrade:
+
+                print("DEBUG ORPHAN UPGRADE MATCH: YES")
+
+                orphan_task_number = int(orphan_upgrade.group(1))
+                orphan_task_content = orphan_upgrade.group(2).strip()
+
+                print(
+                    "DEBUG ORPHAN UPGRADE TASK NUMBER:",
+                    repr(orphan_upgrade.group(1))
+                )
+
+                print(
+                    "DEBUG ORPHAN UPGRADE CONTENT:",
+                    repr(orphan_task_content)
+                )
+
+                # -----------------------------------------------------
+                # Determine whether this orphaned upgrade is a flower.
+                # -----------------------------------------------------
+
+                orphan_flower = re.search(
+                    r"Harvest\s+(.+?)[!.]*$",
+                    orphan_task_content,
+                    re.IGNORECASE
+                )
+
+                if orphan_flower:
+
+                    flower_name = orphan_flower.group(1).strip(
+                        " ,.;:'\"!"
+                    )
+
+                    print(
+                        "DEBUG ORPHAN UPGRADE CATEGORY: 🌸 FLOWER"
+                    )
+
+                    print(
+                        "DEBUG ORPHAN FLOWER NAME:",
+                        repr(flower_name)
+                    )
+
+                    entries.append({
+                        "server_number": None,
+                        "game_name": "<unknown player>",
+                        "action": "upgraded",
+                        "task_number": orphan_task_number,
+                        "task_text": flower_name,
+                        "competition_points": None,
+                        "competition_tokens": None,
+                        "is_flower": True,
+                    })
+
+                    print(
+                        "DEBUG DECISION: ADDING UNKNOWN-PLAYER "
+                        "FLOWER UPGRADE"
+                    )
+
+                else:
+
+                    print(
+                        "DEBUG ORPHAN UPGRADE CATEGORY: "
+                        "🚫 NOT A FLOWER"
+                    )
+
+                i = orphan_j
+                continue
+
+            # ---------------------------------------------------------
+            # No recognizable orphan task.
+            # ---------------------------------------------------------
+
+            print(
+                "DEBUG: No player AND no orphan task detected."
+            )
+
             i += 1
             continue
 
