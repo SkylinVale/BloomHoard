@@ -299,19 +299,17 @@ def parse_task_logs(
     """
     Extract flower/task entries from OCR text.
 
-    This parser intentionally treats OCR as unreliable.
+    OCR is assumed to be unreliable.
 
-    Supported examples:
-
+    Supported:
         s29.Metp has completed Advanced Task 63: Harvest 560 Orange Poppy
         s25.Rosie has completed Task 29: Harvest 280 White Ixia
         s39.Re Nichole has completed Advanced Task 7: Harvest 560 Brunfelsia pauciflora
         s16.Hill Ynez has completed Task 24: Harvest 280 Orange Oxalis
         s4.Lily spent Ingots to upgrade Task 60: Harvest 560 Taro Purple Gladiolus!!
 
-    OCR damage tolerated:
-
-        $s16.Hill Ynez has completed Task \
+    Handles OCR damage such as:
+        s16.Hill Ynez has completed Task \
         24: Harvest 280 Orange Oxalis
 
         s61.Lexie has completed Task 20: {
@@ -324,21 +322,12 @@ def parse_task_logs(
         . $38.44= spent Ingots to upgrade
         , Task 12: Harvest 560 Pink Astilbe!!
 
-    If a task can be identified but its player cannot,
-    the parser returns:
+        pes eiuey has completed Advanced
+        Task 32: Harvest 600 Pomegranate Moon
 
-        game_name = "<unknown player>"
-        server_number = None
-        ocr_player = <whatever OCR appeared to say>
+        OO 99.01 20:33
 
-    player_aliases may be supplied later to resolve known OCR names,
-    e.g.:
-
-        {
-            "pes eiuey": "Bluey",
-            "re nichole": "Re Nichole",
-        }
-
+    Deleted tasks are intentionally ignored.
     Non-flower upgrades are intentionally ignored.
     """
 
@@ -372,13 +361,32 @@ def parse_task_logs(
     def normalize_spaces(value: str) -> str:
         return re.sub(r"\s+", " ", value).strip()
 
+    def contains_timestamp(value: str) -> bool:
+        """
+        Detect a timestamp anywhere inside an OCR-damaged line.
+
+        Examples:
+            09.06 13:19
+            09.06 13:19 f
+            OO 99.01 20:33
+
+        The last example is intentionally accepted because OCR may
+        corrupt the characters immediately before the timestamp.
+        """
+
+        return bool(
+            re.search(
+                r"\d{2}[.,]\d{2}\s+\d{1,2}:\d{2}",
+                value,
+            )
+        )
+
     def is_timestamp(value: str) -> bool:
         """
-        Normal timestamp:
-            08.27 19:38
-
-        Also tolerate OCR punctuation before/after it.
+        True when the line is essentially just a timestamp,
+        possibly surrounded by OCR garbage.
         """
+
         return bool(
             re.match(
                 r"^[^A-Za-z0-9]*"
@@ -404,12 +412,9 @@ def parse_task_logs(
 
     def clean_player_name(value: str) -> str:
         """
-        Remove OCR garbage around an otherwise valid player name.
-
-        Example:
-            'fi=' -> 'fi'
-            'Metp|' -> 'Metp'
+        Remove OCR punctuation surrounding a player name.
         """
+
         value = normalize_spaces(value)
 
         value = value.strip(
@@ -420,27 +425,17 @@ def parse_task_logs(
 
     def clean_flower_name(value: str) -> str:
         """
-        Clean OCR punctuation from the flower name while preserving
-        the actual task quantity/name.
-
-        Example:
-            '560 Pink | Snapdragon'
-                -> '560 Pink Snapdragon'
-
-            '560 Peach Cream Dahlia, earning Competition...'
-                -> '560 Peach Cream Dahlia'
+        Clean OCR punctuation from a flower/task name.
         """
 
         value = normalize_spaces(value)
 
-        # Remove obvious OCR decoration characters.
         value = re.sub(
             r"[|\\»>_{}[\]()]",
             " ",
             value,
         )
 
-        # The competition text is never part of the flower name.
         value = re.split(
             r",?\s*earning\b",
             value,
@@ -464,11 +459,6 @@ def parse_task_logs(
         return value
 
     def apply_alias(name: str) -> str:
-        """
-        Apply a manually configured OCR alias.
-
-        Aliases are case-insensitive.
-        """
         cleaned = clean_player_name(name)
 
         alias = aliases.get(cleaned.lower())
@@ -484,26 +474,6 @@ def parse_task_logs(
 
     # ---------------------------------------------------------
     # Player header detection
-    # ---------------------------------------------------------
-    #
-    # IMPORTANT:
-    #
-    # The old parser captured only ONE word:
-    #
-    #     s39.Re Nichole
-    #          ^^
-    #          Re
-    #
-    # We instead capture EVERYTHING between the server separator
-    # and the known action phrase.
-    #
-    # This allows:
-    #
-    #     Re Nichole
-    #     Hill Ynez
-    #     CrystalAce
-    #     Matilda
-    #
     # ---------------------------------------------------------
 
     combined_player_pattern = re.compile(
@@ -537,6 +507,16 @@ def parse_task_logs(
         server = int(match.group(1))
         name = apply_alias(match.group(2))
 
+        # Avoid treating extremely short OCR garbage as a useful
+        # player name unless it has been explicitly aliased.
+        if len(name) < 2:
+            print(
+                "DEBUG PLAYER REJECTED - NAME TOO SHORT: "
+                f"server={server}, name={name!r}, "
+                f"raw_line={line!r}"
+            )
+            return None
+
         print(
             "DEBUG PLAYER DETECTED - COMBINED: "
             f"server={server}, name={name!r}, "
@@ -550,28 +530,7 @@ def parse_task_logs(
         }
 
     # ---------------------------------------------------------
-    # Build logical OCR blocks
-    # ---------------------------------------------------------
-    #
-    # This is the biggest change.
-    #
-    # We do NOT assume that the player line itself defines the
-    # boundaries of a log entry.
-    #
-    # Instead:
-    #
-    #   timestamp
-    #   player/task text
-    #   timestamp
-    #   player/task text
-    #
-    # becomes separate blocks.
-    #
-    # We ALSO split whenever a new recognizable player header
-    # appears, because OCR sometimes destroys timestamps.
-    #
-    # This prevents an orphaned task from swallowing the next
-    # valid player entry.
+    # Build cleaned OCR lines
     # ---------------------------------------------------------
 
     raw_lines = [
@@ -589,8 +548,31 @@ def parse_task_logs(
         f"\nDEBUG TOTAL CLEANED LINES: {len(raw_lines)}"
     )
 
-    blocks = []
+    # ---------------------------------------------------------
+    # Build logical blocks
+    # ---------------------------------------------------------
+    #
+    # Important:
+    #
+    # Timestamp lines separate cards.
+    #
+    # We also split on recognizable player headers because OCR
+    # occasionally destroys a timestamp completely.
+    #
+    # NEW:
+    #
+    # A timestamp embedded inside an OCR-damaged line is also
+    # treated as a boundary.
+    #
+    # Example:
+    #
+    #     OO 99.01 20:33
+    #
+    # becomes a timestamp boundary instead of being swallowed
+    # into the previous task.
+    # ---------------------------------------------------------
 
+    blocks = []
     current_block = []
 
     def flush_block():
@@ -606,7 +588,22 @@ def parse_task_logs(
 
         line = raw_lines[i]
 
-        # Timestamp separates log cards.
+        # -----------------------------------------------------
+        # Footer
+        # -----------------------------------------------------
+
+        if is_footer(line):
+            print(
+                "DEBUG BLOCK SPLIT: footer "
+                f"{line!r}"
+            )
+            flush_block()
+            break
+
+        # -----------------------------------------------------
+        # Timestamp line
+        # -----------------------------------------------------
+
         if is_timestamp(line):
             print(
                 "DEBUG BLOCK SPLIT: timestamp "
@@ -616,19 +613,65 @@ def parse_task_logs(
             i += 1
             continue
 
-        # Footer ends the useful OCR.
-        if is_footer(line):
-            print(
-                "DEBUG BLOCK SPLIT: footer "
-                f"{line!r}"
-            )
-            flush_block()
-            break
+        # -----------------------------------------------------
+        # Timestamp embedded in OCR garbage
+        #
+        # Example:
+        #     OO 99.01 20:33
+        #
+        # If there is no meaningful task text before it, simply
+        # treat the entire line as a timestamp.
+        #
+        # If there IS text before it, preserve that text as part
+        # of the current block, then split.
+        # -----------------------------------------------------
 
-        # A recognizable combined player starts a new block.
+        timestamp_match = re.search(
+            r"\d{2}[.,]\d{2}\s+\d{1,2}:\d{2}",
+            line,
+        )
+
+        if timestamp_match:
+
+            before_timestamp = line[
+                :timestamp_match.start()
+            ].strip()
+
+            after_timestamp = line[
+                timestamp_match.end():
+            ].strip()
+
+            # Pure OCR garbage + timestamp.
+            if (
+                not before_timestamp
+                or not re.search(
+                    r"[A-Za-z]{3,}",
+                    before_timestamp,
+                )
+            ):
+                print(
+                    "DEBUG BLOCK SPLIT: embedded timestamp "
+                    f"{line!r}"
+                )
+
+                flush_block()
+
+                # Anything after the timestamp is potentially
+                # the beginning of the next entry.
+                if after_timestamp:
+                    current_block.append(after_timestamp)
+
+                i += 1
+                continue
+
+        # -----------------------------------------------------
+        # Recognizable combined player header
+        # -----------------------------------------------------
+
         player = detect_combined_player(line)
 
         if player:
+
             if current_block:
                 print(
                     "DEBUG BLOCK SPLIT: new player header "
@@ -640,11 +683,13 @@ def parse_task_logs(
             i += 1
             continue
 
-        # Split-format server line:
+        # -----------------------------------------------------
+        # Split-format server/name:
         #
         # s29
         # Metp
-        #
+        # -----------------------------------------------------
+
         server_only = server_only_pattern.match(line)
 
         if server_only and i + 1 < len(raw_lines):
@@ -660,6 +705,7 @@ def parse_task_logs(
                     re.IGNORECASE,
                 )
             ):
+
                 if current_block:
                     flush_block()
 
@@ -695,21 +741,6 @@ def parse_task_logs(
     # ---------------------------------------------------------
     # Task regexes
     # ---------------------------------------------------------
-    #
-    # OCR can insert garbage between:
-    #
-    #     Task 24:
-    #
-    # and:
-    #
-    #     Harvest
-    #
-    # It can even produce:
-    #
-    #     Task \ 24:
-    #
-    # So allow non-digit OCR noise before the task number.
-    # ---------------------------------------------------------
 
     completed_pattern = re.compile(
         r"has\s+completed\b"
@@ -730,8 +761,6 @@ def parse_task_logs(
         re.IGNORECASE,
     )
 
-    # Fallback completed pattern for orphaned OCR where
-    # "has completed" was destroyed.
     orphan_completed_pattern = re.compile(
         r"\bTask\s*"
         r"[^0-9]{0,8}"
@@ -749,20 +778,33 @@ def parse_task_logs(
         re.IGNORECASE,
     )
 
+    # ---------------------------------------------------------
+    # UPGRADE PATTERN
+    #
+    # IMPORTANT FIX:
+    #
+    # OCR frequently inserts punctuation between "upgrade"
+    # and "Task":
+    #
+    #     upgrade Task 60
+    #     upgrade : Task 60
+    #     upgrade , Task 12
+    #     upgrade | Task 12
+    #
+    # So allow arbitrary OCR punctuation there.
+    # ---------------------------------------------------------
+
     upgrade_pattern = re.compile(
         r"spent\s+Ingots\s+to"
-        r"\s*[\W_]*"
-        r"upgrade"
         r"\s*"
+        r"upgrade"
+        r"[\W_]*"
         r"\bTask\s*"
         r"[^0-9]{0,8}"
         r"(\d+)"
         r"\s*:\s*"
         r"(.+?)"
-        r"(?="
-        r"\s*\bearning\b"
-        r"|$"
-        r")",
+        r"(?=$|\s{2,})",
         re.IGNORECASE,
     )
 
@@ -788,10 +830,14 @@ def parse_task_logs(
         if not match:
             return None
 
-        return clean_flower_name(match.group(1))
+        flower = clean_flower_name(
+            match.group(1)
+        )
+
+        return flower if flower else None
 
     # ---------------------------------------------------------
-    # Parse each logical block
+    # Parse logical blocks
     # ---------------------------------------------------------
 
     entries = []
@@ -817,7 +863,7 @@ def parse_task_logs(
         ocr_player = None
 
         # -----------------------------------------------------
-        # Identify player from combined header
+        # Identify player
         # -----------------------------------------------------
 
         combined_player = detect_combined_player(
@@ -835,11 +881,13 @@ def parse_task_logs(
             ]
 
             ocr_player = clean_player_name(
-                combined_player["header_match"].group(2)
+                combined_player[
+                    "header_match"
+                ].group(2)
             )
 
         # -----------------------------------------------------
-        # Identify player from split format
+        # Split-format player
         # -----------------------------------------------------
 
         elif (
@@ -864,16 +912,40 @@ def parse_task_logs(
             )
 
         # -----------------------------------------------------
-        # If no player was identified, preserve possible OCR
-        # player text for manual resolution later.
+        # Deleted tasks
         #
-        # Example:
+        # THIS MUST HAPPEN BEFORE THE ORPHAN COMPLETED FALLBACK.
         #
-        #     pes eiuey has completed Advanced
-        #     Task 32: Harvest 600 Pomegranate Moon
+        # Otherwise:
         #
-        # We do NOT pretend that "pes eiuey" is definitely Bluey.
-        # Instead we preserve it.
+        #     deleted Task 7: Harvest 280 Hoary Stock!!
+        #
+        # gets mistaken for a completion because it still
+        # contains "Task 7: Harvest ..."
+        # -----------------------------------------------------
+
+        deleted_match = re.search(
+            r"\bdeleted\s+Task\b",
+            block_text,
+            re.IGNORECASE,
+        )
+
+        if deleted_match:
+
+            print(
+                "DEBUG DELETED TASK: YES"
+            )
+
+            print(
+                "DEBUG DECISION: "
+                "IGNORING DELETED TASK"
+            )
+
+            continue
+
+        # -----------------------------------------------------
+        # If player cannot be confidently identified, preserve
+        # OCR player text.
         # -----------------------------------------------------
 
         if game_name is None:
@@ -883,6 +955,7 @@ def parse_task_logs(
                 r"(?="
                 r"has\s+completed\b"
                 r"|spent\s+Ingots\s+to\b"
+                r"|deleted\s+Task\b"
                 r")",
                 block_text,
                 re.IGNORECASE,
@@ -969,7 +1042,6 @@ def parse_task_logs(
                 "is_flower": True,
             }
 
-            # Preserve OCR player text when it was unresolved.
             if ocr_player:
                 entry["ocr_player"] = ocr_player
 
@@ -988,13 +1060,6 @@ def parse_task_logs(
 
         # -----------------------------------------------------
         # ORPHAN COMPLETED FLOWER
-        #
-        # This handles OCR like:
-        #
-        #     pes eiuey has completed Advanced
-        #     Task 32: Harvest 600 Pomegranate Moon
-        #
-        # where the player header is unusable.
         # -----------------------------------------------------
 
         orphan_completed = (
@@ -1056,9 +1121,6 @@ def parse_task_logs(
 
         # -----------------------------------------------------
         # ANY UPGRADE
-        #
-        # First identify that it is an upgrade.
-        # Then determine whether it is a flower upgrade.
         # -----------------------------------------------------
 
         upgrade = upgrade_pattern.search(
