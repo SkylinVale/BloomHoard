@@ -2449,9 +2449,6 @@ async def testtaskparse(
                 f"{entry['task_text']}"
             )
 
-        lines.append("")
-        lines.append("🧪 **PARSER DEBUG:**")
-        lines.extend(f"`{line}`" for line in debug_log)
 
         await interaction.followup.send(
             "\n".join(lines)[:1900],
