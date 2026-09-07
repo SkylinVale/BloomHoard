@@ -361,7 +361,7 @@ def parse_task_logs(text: str) -> list[dict]:
         # the leading "s" to be recognized as "s", "$", or missing.
         # ---------------------------------------------------------
         match = re.match(
-            r"^[^a-zA-Z0-9]*(?:s|\$)?(\d{1,3})\s*\.\s*(\S+)",
+            r"^[^a-zA-Z0-9]*(?:s|\$)(\d{1,3})\s*\.\s*(\S+)",
             line,
             re.IGNORECASE
         )
