@@ -2202,8 +2202,13 @@ async def testtaskparse(
         )
 
     except Exception as e:
+        import traceback
+
+        error_details = traceback.format_exc()
+
         await interaction.followup.send(
-            f"❌ Task parser test failed: `{type(e).__name__}: {e}`",
+            f"❌ Task parser test failed:\n"
+            f"```text\n{error_details[-1800:]}\n```",
             ephemeral=True
         )
 
