@@ -644,7 +644,7 @@ def parse_task_logs(text: str) -> list[dict]:
             #   etc.
             # -----------------------------------------------------
             flower_upgrade = re.search(
-                r"spent\s+Ingots\s+to\s+upgrade\s+"
+                r"spent\s+Ingots\s+to\s*\|?\s*upgrade\s+"
                 r"Task\s+(\d+)\s*:\s*"
                 r"Harvest\s+(.+?)[!.]*$",
                 entry_text,
