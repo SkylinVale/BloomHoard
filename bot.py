@@ -347,6 +347,7 @@ def parse_task_logs(text: str) -> list[dict]:
         server_number = None
         game_name = None
         start_index = i
+        format_1_detected = False
 
         # ---------------------------------------------------------
         # IMPORTANT: Never treat timestamps or the footer as players.
@@ -402,6 +403,7 @@ def parse_task_logs(text: str) -> list[dict]:
         if match:
             server_number = int(match.group(1))
             game_name = match.group(2)
+            format_1_detected = True
 
             print(
                 "DEBUG PLAYER DETECTED - FORMAT 1: "
@@ -460,21 +462,30 @@ def parse_task_logs(text: str) -> list[dict]:
             continue
 
         # ---------------------------------------------------------
-        # Gather this player's text until the next server entry,
-        # timestamp, or footer.
+        # Gather this player's text until the next server entry.
+        #
+        # IMPORTANT:
+        # Use the format we ACTUALLY detected above.
+        #
+        # Do NOT inspect the OCR line again here. OCR may have
+        # mangled "s2.Matilda" into ", $2.Matilda", so checking
+        # whether the line literally starts with "s2." would
+        # incorrectly classify it as the split format.
         # ---------------------------------------------------------
-        if lines[start_index].lower().startswith(
-            f"s{server_number}.".lower()
-        ):
+
+        if format_1_detected:
+            print(
+                "DEBUG ENTRY FORMAT: combined (detected FORMAT 1)"
+            )
+
             entry_lines = [lines[start_index]]
             j = start_index + 1
 
+        else:
             print(
-                "DEBUG ENTRY FORMAT: combined "
-                "(s##.Name)"
+                "DEBUG ENTRY FORMAT: split (detected FORMAT 2)"
             )
 
-        else:
             entry_lines = [game_name]
             j = start_index + 2
 
@@ -492,7 +503,7 @@ def parse_task_logs(text: str) -> list[dict]:
             )
 
             possible_timestamp = re.match(
-                r"^\d{2}\.\d{2}\s+\d{1,2}:\d{2}$",
+                r"^[^a-zA-Z0-9]*\d{2}[.,]\d{2}\s+\d{1,2}:\d{2}[^a-zA-Z0-9]*$",
                 lines[j]
             )
 
