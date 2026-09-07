@@ -2423,7 +2423,7 @@ async def testtaskparse(
         crop.save(crop_path)
 
         ocr_text = await ocr_image(crop_path)
-        entries, debug_log = parse_task_logs(ocr_text, debug=True)
+        entries = parse_task_logs(ocr_text)
 
         debug_lines = [
             f"`{line}`"
