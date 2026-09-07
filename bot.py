@@ -320,7 +320,7 @@ def parse_task_logs(text: str) -> list[dict]:
         # Format 1: s29.Metp
         # ---------------------------------------------------------
         match = re.match(
-            r"^s(\d{1,3})\s*\.\s*(\S+)",
+            r"^[^a-zA-Z0-9]*s(\d{1,3})\s*\.\s*(\S+)",
             line,
             re.IGNORECASE
         )
@@ -376,7 +376,7 @@ def parse_task_logs(text: str) -> list[dict]:
 
         while j < len(lines):
             possible_server = re.match(
-                r"^s\d{1,3}(?:\.|\s*$)",
+                r"^[^a-zA-Z0-9]*s\d{1,3}(?:\.|\s*$)",
                 lines[j],
                 re.IGNORECASE
             )
