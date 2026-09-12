@@ -2330,12 +2330,26 @@ class TaskImportConfirmView(discord.ui.View):
                     SUPABASE_KEY
                 )
 
-                existing_alias = (
+                alias_query = (
                     alias_supabase
                     .table("player_aliases")
                     .select("id, player_id")
                     .eq("game_name", alias["game_name"])
-                    .eq("server_number", alias["server_number"])
+                )
+                
+                if alias["server_number"] is None:
+                    alias_query = alias_query.is_(
+                        "server_number",
+                        "null"
+                    )
+                else:
+                    alias_query = alias_query.eq(
+                        "server_number",
+                        alias["server_number"]
+                    )
+                
+                existing_alias = (
+                    alias_query
                     .limit(1)
                     .execute()
                     .data
