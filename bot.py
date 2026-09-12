@@ -4958,8 +4958,16 @@ async def run_importtasklog(
 
         unknown_entries = []
 
-        pending_keys = set()
-
+        pending_imports = session.pending_imports
+        
+        pending_keys = {
+            (
+                item["gamename"],
+                item["blossom"]
+            )
+            for item in pending_imports
+        }
+        
         new_count = 0
         owned_count = 0
         duplicate_count = 0
