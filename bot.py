@@ -1529,28 +1529,54 @@ def load_blossom_names():
         if row.get("name")
     ]
 
-
 def normalize_blossom_name(value: str) -> str:
     """
-    Normalize a blossom name for comparison.
+    Normalize blossom text for comparison.
 
-    This does NOT modify the canonical database name.
-    It only creates a comparison-friendly version by:
-        - lowercasing
-        - replacing punctuation with spaces
-        - removing stray OCR symbols
-        - collapsing repeated whitespace
+    Task-log entries may begin with the harvest quantity:
+
+        280 Peach Blossom Jacquelyn
+        560 Taro Purple Gladiolus
+
+    The quantity is not part of the blossom name, so remove it
+    before comparing against the canonical blossoms table.
+
+    This does NOT modify the parser output or the canonical
+    database name. It only creates a comparison-friendly version.
     """
+
     if not value:
         return ""
 
-    value = str(value).lower()
+    value = str(value).strip().lower()
+
+    # Remove the harvest quantity at the beginning.
+    #
+    # Examples:
+    #     "280 Peach Blossom Jacquelyn"
+    #     "560 Taro Purple Gladiolus"
+    #
+    # Both become:
+    #     "Peach Blossom Jacquelyn"
+    value = re.sub(
+        r"^\d+\s*[:\-]?\s*",
+        "",
+        value,
+    )
 
     # Treat punctuation/OCR separators as spaces.
-    value = re.sub(r"[^a-z0-9]+", " ", value)
+    value = re.sub(
+        r"[^a-z0-9]+",
+        " ",
+        value,
+    )
 
     # Collapse repeated whitespace.
-    value = re.sub(r"\s+", " ", value).strip()
+    value = re.sub(
+        r"\s+",
+        " ",
+        value,
+    ).strip()
 
     return value
 
