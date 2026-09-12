@@ -2277,9 +2277,23 @@ class TaskImportConfirmView(discord.ui.View):
         )
         self.finished = False
 
+        if self.pending_imports:
+            button_label = (
+                f"Import {len(self.pending_imports)} Blossoms"
+            )
+            button_emoji = "🌸"
+        
+        elif self.pending_aliases:
+            button_label = "Save Player Aliases"
+            button_emoji = "👤"
+        
+        else:
+            button_label = "Confirm Import"
+            button_emoji = "✅"
+        
         confirm_button = discord.ui.Button(
-            label=f"Import {len(self.pending_imports)} Blossoms",
-            emoji="🌸",
+            label=button_label,
+            emoji=button_emoji,
             style=discord.ButtonStyle.success
         )
 
@@ -5291,7 +5305,7 @@ async def run_importtasklog(
                 ephemeral=True
             )
 
-        elif pending_imports:
+        elif pending_imports or session.pending_aliases:
 
             lines.append("")
             lines.append(
