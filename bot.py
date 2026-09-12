@@ -2153,7 +2153,8 @@ class TaskPlayerReviewView(discord.ui.View):
         player_aliases,
         unknown_entries,
         base_output,
-        resume_command="testimportresolve"
+        resume_command="testimportresolve",
+        image=None
     ):
         super().__init__(timeout=600)
     
@@ -2161,6 +2162,7 @@ class TaskPlayerReviewView(discord.ui.View):
         self.unknown_entries = list(unknown_entries)
         self.base_output = base_output
         self.resume_command = resume_command
+        self.image = image
     
         self.players = load_current_players()
 
@@ -5029,7 +5031,8 @@ async def importtasklog(
                 player_aliases,
                 unknown_entries,
                 "\n".join(lines),
-                resume_command="importtasklog"
+                resume_command="importtasklog",
+                image=image
             )
 
             await interaction.followup.send(
