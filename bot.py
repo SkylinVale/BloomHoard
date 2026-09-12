@@ -3177,61 +3177,7 @@ async def testtaskparse(
         if os.path.exists(crop_path):
             os.remove(crop_path)
 
-@tree.command(
-    name="testalias",
-    description="Test player alias resolution"
-)
-async def testalias(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
 
-    try:
-        aliases = load_player_aliases()
-
-        tests = [
-            ("Miraea", 5),
-            ("Lily", 4),
-            ("DefinitelyNotAPlayer", 99),
-        ]
-
-        lines = ["🔎 **Player alias test:**"]
-
-        for game_name, server_number in tests:
-            result = resolve_player_alias(
-                game_name,
-                server_number,
-                aliases
-            )
-
-            if result:
-                lines.append(
-                    f"✅ `{game_name}` / s{server_number} "
-                    f"→ player_id `{result['player_id']}` "
-                    f"({result['match_type']})"
-                )
-            else:
-                lines.append(
-                    f"❌ `{game_name}` / s{server_number} "
-                    f"→ no match"
-                )
-
-        lines.append("")
-        lines.append(f"Loaded **{len(aliases)}** alias records.")
-
-        await interaction.followup.send(
-            "\n".join(lines),
-            ephemeral=True
-        )
-
-    except Exception as e:
-        import traceback
-
-        error_details = traceback.format_exc()
-
-        await interaction.followup.send(
-            f"❌ Alias test failed:\n"
-            f"```text\n{error_details[-1800:]}\n```",
-            ephemeral=True
-        )
 
 # ════════════════════════════════════════════════════════════════════════════════
 # RUN
