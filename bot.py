@@ -5379,20 +5379,18 @@ async def run_importtasklog(
 
 @tree.command(
     name="importtasklog",
-    description="Preview and import blossoms from 1-4 task-log screenshots"
+    description="Preview and import blossoms from 1-3 task-log screenshots"
 )
 @app_commands.describe(
     image1="Task-log screenshot 1",
     image2="Task-log screenshot 2 (optional)",
-    image3="Task-log screenshot 3 (optional)",
-    image4="Task-log screenshot 4 (optional)"
+    image3="Task-log screenshot 3 (optional)"
 )
 async def importtasklog(
     interaction: discord.Interaction,
     image1: discord.Attachment,
     image2: discord.Attachment | None = None,
-    image3: discord.Attachment | None = None,
-    image4: discord.Attachment | None = None
+    image3: discord.Attachment | None = None
 ):
     await interaction.response.defer(ephemeral=True)
 
@@ -5401,8 +5399,7 @@ async def importtasklog(
         for image in (
             image1,
             image2,
-            image3,
-            image4
+            image3
         )
         if image is not None
     ]
