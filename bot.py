@@ -1368,15 +1368,24 @@ async def resolve_game_identity(server_number: int, game_name: str):
 
 def load_player_aliases():
     """
-    Load all known player game names/aliases from player_aliases.
+    Load all player aliases from the player_aliases table.
 
-    Each row connects a game name + server number to a canonical player ID.
-    Returns a list of alias records.
+    A fresh Supabase client is used for this read because the
+    shared client's HTTP connection can occasionally terminate
+    between consecutive synchronous requests.
     """
+
+    alias_supabase = create_client(
+        SUPABASE_URL,
+        SUPABASE_KEY
+    )
+
     return (
-        supabase
+        alias_supabase
         .table("player_aliases")
-        .select("player_id, game_name, server_number")
+        .select(
+            "player_id, game_name, server_number"
+        )
         .execute()
         .data
         or []
@@ -1514,12 +1523,20 @@ def load_blossom_names():
     """
     Load all canonical blossom names from the blossoms table.
 
-    The database contains the authoritative spelling of every blossom.
+    A fresh Supabase client is used for this read because the
+    shared client's HTTP connection can occasionally terminate
+    between consecutive synchronous requests.
     """
+
+    blossom_supabase = create_client(
+        SUPABASE_URL,
+        SUPABASE_KEY
+    )
+
     return [
         row["name"]
         for row in (
-            supabase
+            blossom_supabase
             .table("blossoms")
             .select("name")
             .execute()
@@ -3686,41 +3703,8 @@ async def testimportresolve(
         # STEP 3: LOAD REFERENCE DATA ONCE
         # -----------------------------------------------------
        
-        blossom_names = [
-            row["name"]
-            for row in (
-                supabase
-                .table("blossoms")
-                .select("name")
-                .limit(10)
-                .execute()
-                .data
-                or []
-            )
-            if row.get("name")
-        ]
-        
-        # Use a fresh Supabase client for the second request.
-        # This is a diagnostic to determine whether the shared
-        # HTTP session is causing the connection termination.
-        test_supabase = create_client(
-            SUPABASE_URL,
-            SUPABASE_KEY
-        )
-
-        player_aliases = [
-            row
-            for row in (
-                test_supabase
-                .table("player_aliases")
-                .select(
-                    "player_id, game_name, server_number"
-                )
-                .execute()
-                .data
-                or []
-            )
-        ]
+        player_aliases = load_player_aliases()
+        blossom_names = load_blossom_names()
         
         # -----------------------------------------------------
         # STEP 4: RESOLVE EACH PARSED ENTRY
