@@ -5226,6 +5226,10 @@ async def run_importtasklog(
             f"**{review_count + len(unknown_entries)}**"
         )
 
+        lines.append(
+            f"👤 Player aliases to save: **{len(session.pending_aliases)}**"
+        )
+
         lines.append("")
         lines.append(
             f"Reference data: "
