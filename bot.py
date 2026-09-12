@@ -2017,7 +2017,7 @@ class TaskPlayerMatchView(discord.ui.View):
         await interaction.response.defer(
             ephemeral=True
         )
-
+    
         selected_player = next(
             (
                 player
@@ -2026,95 +2026,122 @@ class TaskPlayerMatchView(discord.ui.View):
             ),
             None
         )
-
+    
         if not selected_player:
             await interaction.followup.send(
                 "❌ Could not find that florist.",
                 ephemeral=True
             )
             return
-
+    
         if not self.review_view.unknown_entries:
             await interaction.followup.send(
                 "❌ There are no unresolved players remaining.",
                 ephemeral=True
             )
             return
-
+    
         # Resolve the FIRST unresolved player in the queue.
         unknown_entry = (
             self.review_view.unknown_entries[0]
         )
-
+    
         lookup_name = (
             unknown_entry.get("ocr_player")
             or unknown_entry.get("game_name")
         )
-
+    
         server_number = unknown_entry.get(
             "server_number"
         )
-
-        alias_status = save_player_alias(
-            selected_player["id"],
-            lookup_name,
-            server_number
+    
+        # -----------------------------------------------------
+        # Check whether this exact alias already exists in the
+        # aliases loaded for this import session.
+        #
+        # IMPORTANT:
+        # We do NOT write anything to Supabase here.
+        # -----------------------------------------------------
+    
+        existing_alias = next(
+            (
+                alias
+                for alias in self.review_view.player_aliases
+                if alias.get("game_name") == lookup_name
+                and alias.get("server_number") == server_number
+            ),
+            None
         )
-        
-        if alias_status == "conflict":
-        
-            await interaction.followup.send(
-                f"🚨 **Alias conflict!**\n\n"
-                f"`{lookup_name}` / s{server_number} "
-                "is already associated with a different florist.\n\n"
-                "No alias was changed. Please investigate this identity "
-                "before continuing.",
-                ephemeral=True
-            )
-            return
-        
-        self.review_view.player_aliases.append({
-            "player_id": selected_player["id"],
-            "game_name": lookup_name,
-            "server_number": server_number
-        })
-        
-        self.review_view.unknown_entries.pop(0)
-        
-        if alias_status == "created":
-        
-            alias_message = (
-                f"✅ Saved `{lookup_name}` / s{server_number} "
-                f"as an alias for **{selected_player['gamename']}**."
-            )
-        
-        else:
-        
+    
+        if existing_alias:
+            if existing_alias["player_id"] != selected_player["id"]:
+                await interaction.followup.send(
+                    f"🚨 **Alias conflict!**\n\n"
+                    f"`{lookup_name}` / s{server_number} "
+                    "is already associated with a different florist.\n\n"
+                    "No alias was changed. Please investigate this identity "
+                    "before continuing.",
+                    ephemeral=True
+                )
+                return
+    
             alias_message = (
                 f"✅ `{lookup_name}` / s{server_number} "
-                f"is already saved as an alias for "
+                f"is already known as an alias for "
                 f"**{selected_player['gamename']}**."
             )
-
+    
+        else:
+            # -------------------------------------------------
+            # This is a NEW alias for this import session.
+            #
+            # Keep it in memory only.
+            # -------------------------------------------------
+    
+            pending_alias = {
+                "player_id": selected_player["id"],
+                "game_name": lookup_name,
+                "server_number": server_number
+            }
+    
+            self.review_view.pending_aliases.append(
+                pending_alias
+            )
+    
+            # Add it to the in-memory resolver data so that
+            # the resumed import can immediately use it.
+            self.review_view.player_aliases.append(
+                pending_alias
+            )
+    
+            alias_message = (
+                f"📝 Temporarily mapped `{lookup_name}` / s{server_number} "
+                f"to **{selected_player['gamename']}**.\n"
+                f"*(This alias will be saved only if the import is confirmed.)*"
+            )
+    
+        # Remove this entry from the unresolved queue.
+        self.review_view.unknown_entries.pop(0)
+    
         # -----------------------------------------------------
         # More unresolved players remain.
         # -----------------------------------------------------
-
+    
         if self.review_view.unknown_entries:
-
+    
             next_entry = (
                 self.review_view.unknown_entries[0]
             )
-
+    
             next_name = (
                 next_entry.get("ocr_player")
                 or next_entry.get("game_name")
             )
-
+    
             next_server = next_entry.get(
                 "server_number"
             )
-
+    
             await interaction.followup.send(
                 (
                     f"{alias_message}\n\n"
@@ -2125,32 +2152,33 @@ class TaskPlayerMatchView(discord.ui.View):
                 view=self.review_view,
                 ephemeral=True
             )
-
+    
             return
-
+    
         # -----------------------------------------------------
         # All unknown players have now been resolved.
         # -----------------------------------------------------
-        
+    
         if (
             self.review_view.resume_command == "importtasklog"
             and self.review_view.image is not None
         ):
-        
+    
             await interaction.followup.send(
                 f"{alias_message}\n\n"
                 f"🎉 **All unknown players have been identified!**\n\n"
                 f"🔄 **Resuming the import preview...**",
                 ephemeral=True
             )
-        
+    
             await run_importtasklog(
                 interaction,
-                self.review_view.image
+                self.review_view.image,
+                self.review_view.pending_aliases
             )
-        
+    
         else:
-        
+    
             await interaction.followup.send(
                 f"{alias_message}\n\n"
                 f"🎉 **All unknown players have been identified!**\n\n"
@@ -2165,6 +2193,9 @@ class TaskPlayerReviewView(discord.ui.View):
     Queue of unresolved players.
 
     Only one unresolved player is handled at a time.
+
+    Player aliases selected during an import are kept temporarily
+    and are not written to Supabase until the import is confirmed.
     """
 
     def __init__(
@@ -2173,16 +2204,25 @@ class TaskPlayerReviewView(discord.ui.View):
         unknown_entries,
         base_output,
         resume_command="testimportresolve",
-        image=None
+        image=None,
+        pending_aliases=None
     ):
         super().__init__(timeout=600)
-    
+
         self.player_aliases = player_aliases
         self.unknown_entries = list(unknown_entries)
         self.base_output = base_output
         self.resume_command = resume_command
         self.image = image
-    
+
+        # Aliases proposed during THIS import.
+        # These are not written to Supabase until Confirm Import.
+        self.pending_aliases = (
+            pending_aliases
+            if pending_aliases is not None
+            else []
+        )
+
         self.players = load_current_players()
 
         self.pending_matches = []
@@ -2223,10 +2263,19 @@ class TaskPlayerReviewView(discord.ui.View):
 
 class TaskImportConfirmView(discord.ui.View):
 
-    def __init__(self, pending_imports):
+    def __init__(
+        self,
+        pending_imports,
+        pending_aliases=None
+    ):
         super().__init__(timeout=600)
 
         self.pending_imports = list(pending_imports)
+        self.pending_aliases = (
+            list(pending_aliases)
+            if pending_aliases
+            else []
+        )
         self.finished = False
 
         confirm_button = discord.ui.Button(
@@ -2265,10 +2314,92 @@ class TaskImportConfirmView(discord.ui.View):
         imported = []
         skipped = []
         failed = []
+        aliases_saved = []
+        aliases_failed = []
 
-        # ---------------------------------------------------------
-        # Re-check every pending blossom immediately before writing.
-        # ---------------------------------------------------------
+        # -----------------------------------------------------
+        # Save aliases proposed during this import.
+        #
+        # These are the ONLY alias changes made by the import.
+        # -----------------------------------------------------
+
+        for alias in self.pending_aliases:
+
+            try:
+                alias_supabase = create_client(
+                    SUPABASE_URL,
+                    SUPABASE_KEY
+                )
+
+                existing_alias = (
+                    alias_supabase
+                    .table("player_aliases")
+                    .select("id, player_id")
+                    .eq("game_name", alias["game_name"])
+                    .eq("server_number", alias["server_number"])
+                    .limit(1)
+                    .execute()
+                    .data
+                    or []
+                )
+
+                if existing_alias:
+
+                    if (
+                        existing_alias[0]["player_id"]
+                        == alias["player_id"]
+                    ):
+                        aliases_saved.append(
+                            f"{alias['game_name']} / "
+                            f"s{alias['server_number']}"
+                        )
+                    else:
+                        aliases_failed.append(
+                            f"{alias['game_name']} / "
+                            f"s{alias['server_number']} "
+                            "(alias conflict)"
+                        )
+
+                    continue
+
+                result = (
+                    alias_supabase
+                    .table("player_aliases")
+                    .insert({
+                        "player_id": alias["player_id"],
+                        "game_name": alias["game_name"],
+                        "server_number": alias["server_number"]
+                    })
+                    .execute()
+                )
+
+                if result.data:
+                    aliases_saved.append(
+                        f"{alias['game_name']} / "
+                        f"s{alias['server_number']}"
+                    )
+                else:
+                    aliases_failed.append(
+                        f"{alias['game_name']} / "
+                        f"s{alias['server_number']}"
+                    )
+
+            except Exception as e:
+
+                print(
+                    "ERROR SAVING IMPORT ALIAS:",
+                    alias,
+                    repr(e)
+                )
+
+                aliases_failed.append(
+                    f"{alias['game_name']} / "
+                    f"s{alias['server_number']}"
+                )
+
+        # -----------------------------------------------------
+        # Existing ownership import.
+        # -----------------------------------------------------
 
         for item in self.pending_imports:
 
@@ -2376,6 +2507,32 @@ class TaskImportConfirmView(discord.ui.View):
             f"❌ Failed: **{len(failed)}**"
         )
 
+        lines.append(
+            f"👤 Aliases saved: **{len(aliases_saved)}**"
+        )
+
+        lines.append(
+            f"⚠️ Alias failures: **{len(aliases_failed)}**"
+        )
+
+        if aliases_saved:
+            lines.append("")
+            lines.append("**Aliases saved:**")
+
+            for alias in aliases_saved:
+                lines.append(
+                    f"👤 {alias}"
+                )
+
+        if aliases_failed:
+            lines.append("")
+            lines.append("**Alias failures:**")
+
+            for alias in aliases_failed:
+                lines.append(
+                    f"❌ {alias}"
+                )
+
         if imported:
 
             lines.append("")
@@ -2433,7 +2590,7 @@ class TaskImportConfirmView(discord.ui.View):
 
         await interaction.response.send_message(
             "❌ **Import cancelled.**\n\n"
-            "No ownership records were changed.",
+            "No ownership or player-alias records were changed.",
             ephemeral=True
         )
 
@@ -4690,12 +4847,15 @@ async def testimportresolve(
 
 async def run_importtasklog(
     interaction: discord.Interaction,
-    image: discord.Attachment
+    image: discord.Attachment,
+    pending_aliases=None
 ):
     image_path = f"/tmp/{image.filename}"
     crop_path = "/tmp/blossomhoard_tasklog_import_crop.png"
 
     try:
+        if pending_aliases is None:
+            pending_aliases = []
         from PIL import Image
 
         # ---------------------------------------------------------
@@ -5037,7 +5197,8 @@ async def run_importtasklog(
                 unknown_entries,
                 "\n".join(lines),
                 resume_command="importtasklog",
-                image=image
+                image=image,
+                pending_aliases=pending_aliases
             )
 
             await interaction.followup.send(
@@ -5068,7 +5229,8 @@ async def run_importtasklog(
             )
 
             view = TaskImportConfirmView(
-                pending_imports
+                pending_imports,
+                pending_aliases
             )
 
             await interaction.followup.send(
