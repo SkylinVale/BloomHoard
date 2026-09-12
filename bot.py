@@ -1805,10 +1805,15 @@ def resolve_blossom(blossom_text, blossom_names=None):
 # TASK-LOG PLAYER REVIEW
 # ════════════════════════════════════════════════════════════════════════════════
 
+# ════════════════════════════════════════════════════════════════════════════════
+# TASK-LOG PLAYER REVIEW
+# ════════════════════════════════════════════════════════════════════════════════
+
 def load_current_players():
     """
-    Load current florists for the player-selection dropdown.
-    Returns player records with stable player IDs.
+    Load current florists for player identification.
+
+    Returns player records using the stable player ID.
     """
 
     player_supabase = create_client(
@@ -1833,9 +1838,10 @@ def save_player_alias(
     server_number
 ):
     """
-    Save an OCR-discovered game identity as an alias for a player.
+    Save an OCR-discovered game identity as an alias.
 
-    If the exact alias already exists, do nothing.
+    If the exact game_name/server combination already exists,
+    do not create a duplicate.
     """
 
     alias_supabase = create_client(
@@ -1846,7 +1852,7 @@ def save_player_alias(
     existing = (
         alias_supabase
         .table("player_aliases")
-        .select("id")
+        .select("id, player_id")
         .eq("game_name", game_name)
         .eq("server_number", server_number)
         .limit(1)
@@ -1872,50 +1878,131 @@ def save_player_alias(
     return True
 
 
-class TaskPlayerSelect(discord.ui.Select):
+class TaskPlayerSearchModal(discord.ui.Modal):
     """
-    Dropdown used when OCR finds a player identity that is not
-    currently recognized.
+    Modal where staff types the florist name they want to find.
+    """
+
+    def __init__(self, review_view):
+        super().__init__(
+            title="Identify Player"
+        )
+
+        self.review_view = review_view
+
+        self.florist_name = discord.ui.TextInput(
+            label="Florist name",
+            placeholder="Type part or all of the florist's name",
+            required=True,
+            max_length=100
+        )
+
+        self.add_item(self.florist_name)
+
+    async def on_submit(
+        self,
+        interaction: discord.Interaction
+    ):
+        await interaction.response.defer(
+            ephemeral=True
+        )
+
+        search_text = (
+            str(self.florist_name.value)
+            .strip()
+            .lower()
+        )
+
+        matches = [
+            player
+            for player in self.review_view.players
+            if search_text in player["gamename"].lower()
+        ]
+
+        if not matches:
+            await interaction.followup.send(
+                f"❌ No florist found matching "
+                f"**{self.florist_name.value}**.\n\n"
+                f"Try typing a different part of the name.",
+                ephemeral=True
+            )
+            return
+
+        if len(matches) > 25:
+            await interaction.followup.send(
+                f"❌ **{len(matches)} florists** match "
+                f"**{self.florist_name.value}**.\n\n"
+                f"Please type a few more letters.",
+                ephemeral=True
+            )
+            return
+
+        self.review_view.pending_matches = matches
+
+        await interaction.followup.send(
+            content=(
+                f"🔍 **Florists matching "
+                f"`{self.florist_name.value}`:**\n\n"
+                f"Choose the correct florist:"
+            ),
+            view=TaskPlayerMatchView(
+                self.review_view,
+                matches
+            ),
+            ephemeral=True
+        )
+
+
+class TaskPlayerMatchView(discord.ui.View):
+    """
+    Shows the florist search results as buttons.
+
+    This view is intentionally limited to 25 matches because
+    Discord limits a row of selectable options/buttons.
     """
 
     def __init__(
         self,
-        parent_view,
-        unknown_entry,
-        players
+        review_view,
+        matches
     ):
-        self.parent_view = parent_view
-        self.unknown_entry = unknown_entry
+        super().__init__(timeout=300)
 
-        options = [
-            discord.SelectOption(
-                label=player["gamename"][:100],
-                value=str(player["id"])
+        self.review_view = review_view
+        self.matches = matches
+
+        for player in matches:
+            button = discord.ui.Button(
+                label=player["gamename"][:80],
+                style=discord.ButtonStyle.primary
             )
-            for player in players[:25]
-            if player.get("gamename")
-        ]
 
-        super().__init__(
-            placeholder="Choose the correct florist...",
-            min_values=1,
-            max_values=1,
-            options=options
-        )
+            async def select_player(
+                interaction,
+                player_id=player["id"]
+            ):
+                await self.choose_player(
+                    interaction,
+                    player_id
+                )
 
-    async def callback(
+            button.callback = select_player
+            self.add_item(button)
+
+    async def choose_player(
         self,
-        interaction: discord.Interaction
+        interaction: discord.Interaction,
+        player_id
     ):
-        await interaction.response.defer()
-
-        selected_player_id = int(self.values[0])
+        await interaction.response.defer(
+            ephemeral=True
+        )
 
         selected_player = next(
             (
                 player
-                for player in self.parent_view.players
-                if player["id"] == selected_player_id
+                for player in self.matches
+                if player["id"] == player_id
             ),
             None
         )
@@ -1927,61 +2014,108 @@ class TaskPlayerSelect(discord.ui.Select):
             )
             return
 
-        lookup_name = (
-            self.unknown_entry.get("ocr_player")
-            or self.unknown_entry.get("game_name")
+        if not self.review_view.unknown_entries:
+            await interaction.followup.send(
+                "❌ There are no unresolved players remaining.",
+                ephemeral=True
+            )
+            return
+
+        # Resolve the FIRST unresolved player in the queue.
+        unknown_entry = (
+            self.review_view.unknown_entries[0]
         )
 
-        server_number = self.unknown_entry.get(
+        lookup_name = (
+            unknown_entry.get("ocr_player")
+            or unknown_entry.get("game_name")
+        )
+
+        server_number = unknown_entry.get(
             "server_number"
         )
 
         created = save_player_alias(
-            selected_player_id,
+            selected_player["id"],
             lookup_name,
             server_number
         )
 
-        if created:
-            status = (
-                f"✅ Saved alias: **{lookup_name}** / "
-                f"s{server_number} → "
-                f"**{selected_player['gamename']}**"
-            )
-        else:
-            status = (
-                f"ℹ️ Alias already existed: **{lookup_name}** / "
-                f"s{server_number}"
-            )
-
-        # Add the new alias to the in-memory list so the current
-        # test can immediately resolve the player without another
-        # database request.
-        self.parent_view.player_aliases.append({
-            "player_id": selected_player_id,
+        # Add the alias to the in-memory data so the current
+        # import session knows about it immediately.
+        self.review_view.player_aliases.append({
+            "player_id": selected_player["id"],
             "game_name": lookup_name,
             "server_number": server_number
         })
 
-        # Disable this selector so it cannot accidentally be
-        # submitted a second time.
-        self.disabled = True
+        # Remove this unresolved player from the queue.
+        self.review_view.unknown_entries.pop(0)
 
-        await interaction.edit_original_response(
-            content=(
-                f"{self.parent_view.base_output}\n\n"
-                f"👤 **Player resolution:**\n"
-                f"{status}\n\n"
-                f"🔄 Re-run `/testimportresolve` to verify the "
-                f"saved alias."
+        if created:
+            alias_message = (
+                f"✅ Saved **{lookup_name} / s{server_number}** "
+                f"as an alias for **{selected_player['gamename']}**."
+            )
+        else:
+            alias_message = (
+                f"ℹ️ **{lookup_name} / s{server_number}** "
+                f"was already saved as an alias."
+            )
+
+        # -----------------------------------------------------
+        # More unresolved players remain.
+        # -----------------------------------------------------
+
+        if self.review_view.unknown_entries:
+
+            next_entry = (
+                self.review_view.unknown_entries[0]
+            )
+
+            next_name = (
+                next_entry.get("ocr_player")
+                or next_entry.get("game_name")
+            )
+
+            next_server = next_entry.get(
+                "server_number"
+            )
+
+            await interaction.followup.send(
+                (
+                    f"{alias_message}\n\n"
+                    f"🔍 **Next unresolved player:**\n"
+                    f"`{next_name}` / s{next_server}\n\n"
+                    f"Click **Identify Player** to continue."
+                ),
+                view=self.review_view,
+                ephemeral=True
+            )
+
+            return
+
+        # -----------------------------------------------------
+        # All unknown players have now been resolved.
+        # -----------------------------------------------------
+
+        await interaction.followup.send(
+            (
+                f"{alias_message}\n\n"
+                f"🎉 **All unknown players have been identified!**\n\n"
+                f"Run `/testimportresolve` again with the "
+                f"same screenshot to verify that all aliases "
+                f"now resolve automatically."
             ),
-            view=self.parent_view
+            ephemeral=True
         )
 
 
 class TaskPlayerReviewView(discord.ui.View):
     """
-    Holds player-selection dropdowns for unresolved task-log players.
+    Queue of unresolved players.
+
+    Only one unresolved player is handled at a time.
     """
 
     def __init__(
@@ -1990,20 +2124,46 @@ class TaskPlayerReviewView(discord.ui.View):
         unknown_entries,
         base_output
     ):
-        super().__init__(timeout=300)
+        super().__init__(timeout=600)
 
         self.player_aliases = player_aliases
-        self.players = load_current_players()
+        self.unknown_entries = list(
+            unknown_entries
+        )
         self.base_output = base_output
 
-        for entry in unknown_entries:
-            self.add_item(
-                TaskPlayerSelect(
-                    self,
-                    entry,
-                    self.players
-                )
+        self.players = load_current_players()
+
+        self.pending_matches = []
+
+        self.identify_button = discord.ui.Button(
+            label="Identify Player",
+            emoji="🔍",
+            style=discord.ButtonStyle.primary
+        )
+
+        self.identify_button.callback = (
+            self.open_search
+        )
+
+        self.add_item(
+            self.identify_button
+        )
+
+    async def open_search(
+        self,
+        interaction: discord.Interaction
+    ):
+        if not self.unknown_entries:
+            await interaction.response.send_message(
+                "✅ All players have already been identified.",
+                ephemeral=True
             )
+            return
+
+        await interaction.response.send_modal(
+            TaskPlayerSearchModal(self)
+        )
 
 # ════════════════════════════════════════════════════════════════════════════════
 # PAGINATED VIEW
