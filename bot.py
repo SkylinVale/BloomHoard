@@ -3177,7 +3177,118 @@ async def testtaskparse(
         if os.path.exists(crop_path):
             os.remove(crop_path)
 
+@tree.command(
+    name="testplayerresolve",
+    description="Test task-log player resolution"
+)
+@app_commands.describe(
+    image="Upload a task-log screenshot"
+)
+async def testplayerresolve(
+    interaction: discord.Interaction,
+    image: discord.Attachment
+):
+    await interaction.response.defer(ephemeral=True)
 
+    image_path = f"/tmp/{image.filename}"
+
+    try:
+        from PIL import Image
+
+        await image.save(image_path)
+
+        img = Image.open(image_path)
+
+        # Use the same task-log crop as /testtaskparse.
+        w, h = img.size
+        crop = img.crop((
+            int(w * 0.27),
+            int(h * 0.32),
+            int(w * 0.93),
+            int(h * 0.91)
+        ))
+
+        crop_path = "/tmp/blossomhoard_tasklog_crop.png"
+        crop.save(crop_path)
+
+        # Run the existing frozen OCR/parser pipeline.
+        ocr_text = await ocr_image(crop_path)
+        entries = parse_task_logs(ocr_text)
+
+        if not entries:
+            await interaction.followup.send(
+                "❌ OCR worked, but no task-log entries were detected.",
+                ephemeral=True
+            )
+            return
+
+        # Load aliases ONCE for the entire screenshot.
+        aliases = load_player_aliases()
+
+        lines = ["🔎 **Task-log player resolution:**"]
+
+        for entry in entries:
+            server_number = entry.get("server_number")
+
+            # If the parser preserved the raw OCR player name separately,
+            # use that for identity resolution. Otherwise use game_name.
+            ocr_player = entry.get("ocr_player")
+            game_name = entry.get("game_name")
+
+            lookup_name = ocr_player or game_name
+
+            result = resolve_player_alias(
+                lookup_name,
+                server_number,
+                aliases
+            )
+
+            if result:
+                if result["match_type"] == "exact":
+                    match_label = "exact"
+                else:
+                    match_label = "alias"
+
+                lines.append(
+                    f"✅ **{lookup_name}** / s{server_number} "
+                    f"→ player_id `{result['player_id']}` "
+                    f"({result['game_name']}, {match_label})"
+                )
+            else:
+                lines.append(
+                    f"❓ **{lookup_name}** / s{server_number} "
+                    f"→ no player match"
+                )
+
+        lines.append("")
+        lines.append(
+            f"Loaded **{len(aliases)}** player alias records."
+        )
+
+        await interaction.followup.send(
+            "\n".join(lines)[:1900],
+            ephemeral=True
+        )
+
+    except Exception:
+        import traceback
+
+        error_details = traceback.format_exc()
+
+        await interaction.followup.send(
+            f"❌ Player resolution test failed:\n"
+            f"```text\n{error_details[-1800:]}\n```",
+            ephemeral=True
+        )
+
+    finally:
+        if os.path.exists(image_path):
+            os.remove(image_path)
+
+        crop_path = "/tmp/blossomhoard_tasklog_crop.png"
+
+        if os.path.exists(crop_path):
+            os.remove(crop_path)
 
 # ════════════════════════════════════════════════════════════════════════════════
 # RUN
