@@ -2100,13 +2100,10 @@ class TaskPlayerMatchView(discord.ui.View):
         # -----------------------------------------------------
 
         await interaction.followup.send(
-            (
-                f"{alias_message}\n\n"
-                f"🎉 **All unknown players have been identified!**\n\n"
-                f"Run `/testimportresolve` again with the "
-                f"same screenshot to verify that all aliases "
-                f"now resolve automatically."
-            ),
+            f"{alias_message}\n\n"
+            f"🎉 **All unknown players have been identified!**\n\n"
+            f"Run `/{self.resume_command}` again with the same screenshot "
+            f"to continue the import test.",
             ephemeral=True
         )
 
@@ -2122,16 +2119,16 @@ class TaskPlayerReviewView(discord.ui.View):
         self,
         player_aliases,
         unknown_entries,
-        base_output
+        base_output,
+        resume_command="testimportresolve"
     ):
         super().__init__(timeout=600)
-
+    
         self.player_aliases = player_aliases
-        self.unknown_entries = list(
-            unknown_entries
-        )
+        self.unknown_entries = list(unknown_entries)
         self.base_output = base_output
-
+        self.resume_command = resume_command
+    
         self.players = load_current_players()
 
         self.pending_matches = []
@@ -4214,11 +4211,17 @@ async def testimportresolve(
                     "confidence",
                     0
                 )
-
+                
                 match_type = blossom_result.get(
                     "match_type",
                     "unknown"
                 )
+                
+                # Exact normalized matches are definitive.
+                # Some exact results currently return a zero confidence
+                # value internally, so display them as 100%.
+                if match_type == "exact":
+                    confidence = 1.0
 
                 resolved_blossom = blossom_result.get(
                     "blossom"
@@ -4388,6 +4391,401 @@ async def testimportresolve(
         try:
             await interaction.followup.send(
                 "❌ **Import resolution test failed:**\n"
+                f"```text\n{traceback.format_exc()[-3500:]}\n```",
+                ephemeral=True
+            )
+        except Exception:
+            pass
+
+    finally:
+
+        # ---------------------------------------------------------
+        # Clean up temporary files
+        # ---------------------------------------------------------
+
+        try:
+            if os.path.exists(image_path):
+                os.remove(image_path)
+
+            if os.path.exists(crop_path):
+                os.remove(crop_path)
+
+        except Exception:
+            pass
+
+@tree.command(
+    name="importtasklog",
+    description="Preview blossom imports from a task-log screenshot"
+)
+@app_commands.describe(
+    image="Task-log screenshot to preview"
+)
+async def importtasklog(
+    interaction: discord.Interaction,
+    image: discord.Attachment
+):
+    await interaction.response.defer(ephemeral=True)
+
+    image_path = f"/tmp/{image.filename}"
+    crop_path = "/tmp/blossomhoard_tasklog_import_crop.png"
+
+    try:
+        from PIL import Image
+
+        # ---------------------------------------------------------
+        # Save uploaded image
+        # ---------------------------------------------------------
+
+        await image.save(image_path)
+
+        # ---------------------------------------------------------
+        # Crop to the task-log area
+        # ---------------------------------------------------------
+
+        img = Image.open(image_path)
+
+        w, h = img.size
+
+        crop = img.crop(
+            (
+                int(w * 0.27),
+                int(h * 0.32),
+                int(w * 0.93),
+                int(h * 0.91),
+            )
+        )
+
+        crop.save(crop_path)
+
+        # ---------------------------------------------------------
+        # OCR
+        # ---------------------------------------------------------
+
+        ocr_text = await ocr_image(crop_path)
+
+        # ---------------------------------------------------------
+        # Parse task logs
+        # ---------------------------------------------------------
+
+        entries = parse_task_logs(ocr_text)
+
+        if not entries:
+            await interaction.followup.send(
+                "❌ No task-log entries were detected.",
+                ephemeral=True
+            )
+            return
+
+        # ---------------------------------------------------------
+        # Load reference data
+        # ---------------------------------------------------------
+
+        player_aliases = load_player_aliases()
+        blossom_names = load_blossom_names()
+
+        lines = [
+            "🌸 **Blossom import preview:**"
+        ]
+
+        unknown_entries = []
+
+        # Track flowers that appear more than once in this
+        # particular import batch.
+        pending_keys = set()
+
+        new_count = 0
+        owned_count = 0
+        duplicate_count = 0
+        review_count = 0
+
+        # ---------------------------------------------------------
+        # Resolve every parsed entry
+        # ---------------------------------------------------------
+
+        for entry in entries:
+
+            server_number = entry.get("server_number")
+
+            lookup_name = (
+                entry.get("ocr_player")
+                or entry.get("game_name")
+            )
+
+            player_result = resolve_player_alias(
+                lookup_name,
+                server_number,
+                player_aliases
+            )
+
+            blossom_result = resolve_blossom(
+                entry.get("task_text"),
+                blossom_names
+            )
+
+            lines.append("")
+            lines.append(
+                f"**Task {entry.get('task_number')} — "
+                f"{entry.get('action')}**"
+            )
+
+            # -----------------------------------------------------
+            # Player resolution
+            # -----------------------------------------------------
+
+            if player_result:
+
+                player_match_type = player_result.get(
+                    "match_type",
+                    "unknown"
+                )
+
+                lines.append(
+                    f"👤 `{lookup_name}` / s{server_number} "
+                    f"→ **{player_result['game_name']}** "
+                    f"(player_id {player_result['player_id']}, "
+                    f"{player_match_type})"
+                )
+
+            else:
+
+                lines.append(
+                    f"👤 `{lookup_name}` / s{server_number} "
+                    f"→ ❓ **PLAYER NEEDS REVIEW**"
+                )
+
+                unknown_entries.append(entry)
+
+            # -----------------------------------------------------
+            # Blossom resolution
+            # -----------------------------------------------------
+
+            if blossom_result:
+
+                confidence = blossom_result.get(
+                    "confidence",
+                    0
+                )
+
+                blossom_match_type = blossom_result.get(
+                    "match_type",
+                    "unknown"
+                )
+
+                if blossom_match_type == "exact":
+                    confidence = 1.0
+
+                canonical_blossom = blossom_result.get(
+                    "blossom"
+                )
+
+                if canonical_blossom:
+
+                    lines.append(
+                        f"🌸 `{entry.get('task_text')}` "
+                        f"→ **{canonical_blossom}** "
+                        f"({confidence:.0%}, "
+                        f"{blossom_match_type})"
+                    )
+
+                else:
+
+                    lines.append(
+                        f"🌸 `{entry.get('task_text')}` "
+                        f"→ ❓ **BLOSSOM NEEDS REVIEW**"
+                    )
+
+                    review_count += 1
+
+            else:
+
+                canonical_blossom = None
+
+                lines.append(
+                    f"🌸 `{entry.get('task_text')}` "
+                    f"→ ❓ **BLOSSOM NEEDS REVIEW**"
+                )
+
+                review_count += 1
+
+            # -----------------------------------------------------
+            # Ownership preview
+            # -----------------------------------------------------
+
+            if (
+                player_result
+                and blossom_result
+                and canonical_blossom
+                and not blossom_result.get("needs_review")
+            ):
+
+                player_id = player_result["player_id"]
+
+                current_gamename = get_current_player_gamename(
+                    player_id
+                )
+
+                if not current_gamename:
+
+                    lines.append(
+                        "➡️ ❌ **NOT READY — "
+                        "CURRENT FLORIST NAME NOT FOUND**"
+                    )
+
+                    continue
+
+                lines.append(
+                    f"🏷️ Current florist name: "
+                    f"**{current_gamename}**"
+                )
+
+                import_key = (
+                    current_gamename,
+                    canonical_blossom
+                )
+
+                # -------------------------------------------------
+                # Duplicate within this import batch
+                # -------------------------------------------------
+
+                if import_key in pending_keys:
+
+                    lines.append(
+                        "➡️ 🔁 **DUPLICATE IN THIS IMPORT — "
+                        "WOULD SKIP**"
+                    )
+
+                    duplicate_count += 1
+                    continue
+
+                pending_keys.add(import_key)
+
+                # -------------------------------------------------
+                # Already owned in Supabase
+                # -------------------------------------------------
+
+                owned_blossoms = load_owned_blossoms(
+                    current_gamename
+                )
+
+                if canonical_blossom in owned_blossoms:
+
+                    lines.append(
+                        "➡️ ⚠️ **ALREADY OWNED — "
+                        "WOULD SKIP**"
+                    )
+
+                    owned_count += 1
+
+                else:
+
+                    lines.append(
+                        "➡️ 🌸 **NEW — "
+                        "READY TO IMPORT**"
+                    )
+
+                    new_count += 1
+
+            else:
+
+                lines.append(
+                    "➡️ 🚧 **NOT READY — "
+                    "NEEDS REVIEW**"
+                )
+
+        # ---------------------------------------------------------
+        # Summary
+        # ---------------------------------------------------------
+
+        lines.append("")
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append("📋 **Import preview summary**")
+        lines.append(
+            f"🌸 New blossoms: **{new_count}**"
+        )
+        lines.append(
+            f"⚠️ Already owned: **{owned_count}**"
+        )
+        lines.append(
+            f"🔁 Duplicates in this import: **{duplicate_count}**"
+        )
+        lines.append(
+            f"🔍 Needs review: **{review_count + len(unknown_entries)}**"
+        )
+
+        lines.append("")
+        lines.append(
+            f"Reference data: "
+            f"{len(player_aliases)} player aliases, "
+            f"{len(blossom_names)} blossoms."
+        )
+
+        # ---------------------------------------------------------
+        # Player review UI
+        # ---------------------------------------------------------
+
+        if unknown_entries:
+
+            lines.append("")
+            lines.append(
+                "🔍 **One or more players need identification.**"
+            )
+
+        else:
+
+            lines.append("")
+            lines.append(
+                "✅ **All players resolved.**"
+            )
+
+        # ---------------------------------------------------------
+        # SAFETY: preview only
+        # ---------------------------------------------------------
+
+        lines.append("")
+        lines.append(
+            "🔒 **PREVIEW ONLY — no ownership records were changed.**"
+        )
+
+        output = "\n".join(lines)
+
+        # ---------------------------------------------------------
+        # Send preview
+        # ---------------------------------------------------------
+
+        if unknown_entries:
+
+            view = TaskPlayerReviewView(
+                player_aliases,
+                unknown_entries,
+                output,
+                resume_command="importtasklog"
+            )
+
+            await interaction.followup.send(
+                output[:1900],
+                ephemeral=True,
+                view=view
+            )
+
+        else:
+
+            await interaction.followup.send(
+                output[:1900],
+                ephemeral=True
+            )
+
+    except Exception as e:
+
+        print(
+            "ERROR IN /importtasklog:"
+        )
+
+        import traceback
+        traceback.print_exc()
+
+        try:
+            await interaction.followup.send(
+                "❌ **Import preview failed:**\n"
                 f"```text\n{traceback.format_exc()[-3500:]}\n```",
                 ephemeral=True
             )
