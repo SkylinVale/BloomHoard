@@ -1476,34 +1476,48 @@ def save_player_alias(player_id, game_name, server_number=None):
     """
     Save a newly discovered player game name/OCR alias.
 
-    Does nothing if the same player/name/server combination already exists.
-
-    Returns the existing or newly created row.
+    Returns:
+        "created"             - a new alias was saved
+        "already_same_player" - this exact identity already belongs to this player
+        "conflict"            - this exact identity belongs to a different player
     """
     if not game_name:
         return None
 
     cleaned_name = " ".join(str(game_name).strip().split())
 
-    # Check whether this exact identity is already recorded.
+    alias_supabase = create_client(
+        SUPABASE_URL,
+        SUPABASE_KEY
+    )
+
+    # Check whether this exact game name/server identity already exists,
+    # regardless of which player it currently belongs to.
     query = (
-        supabase
+        alias_supabase
         .table("player_aliases")
         .select("id, player_id, game_name, server_number")
-        .eq("player_id", player_id)
         .eq("game_name", cleaned_name)
     )
 
-    if server_number is not None:
+    if server_number is None:
+        query = query.is_("server_number", "null")
+    else:
         query = query.eq("server_number", server_number)
 
-    existing = query.execute().data or []
+    existing = query.limit(1).execute().data or []
 
     if existing:
-        return existing[0]
+        existing_player_id = existing[0]["player_id"]
 
+        if existing_player_id == player_id:
+            return "already_same_player"
+
+        return "conflict"
+
+    # No existing identity was found, so create the alias.
     result = (
-        supabase
+        alias_supabase
         .table("player_aliases")
         .insert({
             "player_id": player_id,
@@ -1513,7 +1527,10 @@ def save_player_alias(player_id, game_name, server_number=None):
         .execute()
     )
 
-    return result.data[0] if result.data else None
+    if result.data:
+        return "created"
+
+    return None
 
 # ════════════════════════════════════════════════════════════════════════════════
 # PLAYER / OWNERSHIP HELPERS
@@ -1879,39 +1896,48 @@ def save_player_alias(
 
 
 class TaskPlayerSearchModal(discord.ui.Modal):
-    """
-    Modal where staff types the florist name they want to find.
-    """
 
-    def __init__(self, review_view):
-        super().__init__(
-            title="Identify Player"
-        )
+    def __init__(self, review_view, unknown_entry):
+        super().__init__(title="Identify Player")
 
         self.review_view = review_view
+        self.unknown_entry = unknown_entry
 
-        self.florist_name = discord.ui.TextInput(
-            label="Florist name",
-            placeholder="Type part or all of the florist's name",
-            required=True,
+        lookup_name = (
+            unknown_entry.get("ocr_player")
+            or unknown_entry.get("game_name")
+            or "Unknown"
+        )
+
+        server_number = unknown_entry.get("server_number")
+
+        self.name_display = discord.ui.TextInput(
+            label=f"Name needing review: {lookup_name}"[:45],
+            placeholder=(
+                f"Identify `{lookup_name}` / s{server_number}"
+                if server_number is not None
+                else f"Identify `{lookup_name}`"
+            ),
+            required=False,
             max_length=100
         )
 
+        self.florist_name = self.name_display
+
         self.add_item(self.florist_name)
 
-    async def on_submit(
-        self,
-        interaction: discord.Interaction
-    ):
-        await interaction.response.defer(
-            ephemeral=True
-        )
+    async def on_submit(self, interaction):
 
-        search_text = (
-            str(self.florist_name.value)
-            .strip()
-            .lower()
-        )
+        search_text = str(
+            self.florist_name.value
+        ).strip().lower()
+
+        if not search_text:
+            await interaction.response.send_message(
+                "❌ Please enter a florist name or part of a florist name.",
+                ephemeral=True
+            )
+            return
 
         matches = [
             player
@@ -1920,38 +1946,32 @@ class TaskPlayerSearchModal(discord.ui.Modal):
         ]
 
         if not matches:
-            await interaction.followup.send(
-                f"❌ No florist found matching "
-                f"**{self.florist_name.value}**.\n\n"
-                f"Try typing a different part of the name.",
+
+            await interaction.response.send_message(
+                f"❌ No florists found matching `{self.florist_name.value}`.\n\n"
+                "Try entering a different part of the florist's name.",
                 ephemeral=True
             )
             return
 
         if len(matches) > 25:
-            await interaction.followup.send(
-                f"❌ **{len(matches)} florists** match "
-                f"**{self.florist_name.value}**.\n\n"
-                f"Please type a few more letters.",
+
+            await interaction.response.send_message(
+                f"🔎 That search found **{len(matches)} florists**.\n\n"
+                "Please type more letters to narrow the results.",
                 ephemeral=True
             )
             return
 
-        self.review_view.pending_matches = matches
-
-        await interaction.followup.send(
-            content=(
-                f"🔍 **Florists matching "
-                f"`{self.florist_name.value}`:**\n\n"
-                f"Choose the correct florist:"
-            ),
+        await interaction.response.send_message(
+            f"🔍 **Florists matching `{self.florist_name.value}`:**\n\n"
+            "Choose the correct florist:",
             view=TaskPlayerMatchView(
                 self.review_view,
                 matches
             ),
             ephemeral=True
         )
-
 
 class TaskPlayerMatchView(discord.ui.View):
     """
@@ -2035,32 +2055,45 @@ class TaskPlayerMatchView(discord.ui.View):
             "server_number"
         )
 
-        created = save_player_alias(
+        alias_status = save_player_alias(
             selected_player["id"],
             lookup_name,
             server_number
         )
-
-        # Add the alias to the in-memory data so the current
-        # import session knows about it immediately.
+        
+        if alias_status == "conflict":
+        
+            await interaction.followup.send(
+                f"🚨 **Alias conflict!**\n\n"
+                f"`{lookup_name}` / s{server_number} "
+                "is already associated with a different florist.\n\n"
+                "No alias was changed. Please investigate this identity "
+                "before continuing.",
+                ephemeral=True
+            )
+            return
+        
         self.review_view.player_aliases.append({
             "player_id": selected_player["id"],
             "game_name": lookup_name,
             "server_number": server_number
         })
-
-        # Remove this unresolved player from the queue.
+        
         self.review_view.unknown_entries.pop(0)
-
-        if created:
+        
+        if alias_status == "created":
+        
             alias_message = (
-                f"✅ Saved **{lookup_name} / s{server_number}** "
+                f"✅ Saved `{lookup_name}` / s{server_number} "
                 f"as an alias for **{selected_player['gamename']}**."
             )
+        
         else:
+        
             alias_message = (
-                f"ℹ️ **{lookup_name} / s{server_number}** "
-                f"was already saved as an alias."
+                f"✅ `{lookup_name}` / s{server_number} "
+                f"is already saved as an alias for "
+                f"**{selected_player['gamename']}**."
             )
 
         # -----------------------------------------------------
@@ -2158,8 +2191,13 @@ class TaskPlayerReviewView(discord.ui.View):
             )
             return
 
+        unknown_entry = self.unknown_entries[0]
+
         await interaction.response.send_modal(
-            TaskPlayerSearchModal(self)
+            TaskPlayerSearchModal(
+                self,
+                unknown_entry
+            )
         )
 
 # ════════════════════════════════════════════════════════════════════════════════
