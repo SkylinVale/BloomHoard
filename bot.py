@@ -1363,6 +1363,150 @@ async def resolve_game_identity(server_number: int, game_name: str):
     return player[0]["gamename"]
 
 # ════════════════════════════════════════════════════════════════════════════════
+# PLAYER ALIAS / IDENTITY HELPERS
+# ════════════════════════════════════════════════════════════════════════════════
+
+def load_player_aliases():
+    """
+    Load all known player game names/aliases from player_aliases.
+
+    Each row connects a game name + server number to a canonical player ID.
+    Returns a list of alias records.
+    """
+    return (
+        supabase
+        .table("player_aliases")
+        .select("player_id, game_name, server_number")
+        .execute()
+        .data
+        or []
+    )
+
+
+def resolve_player_alias(game_name, server_number=None, aliases=None):
+    """
+    Resolve an OCR game name to a player ID using player_aliases.
+
+    If server_number is available, it is used to make the match more specific.
+
+    Returns:
+        {
+            "player_id": int,
+            "game_name": str,
+            "server_number": int | None,
+            "match_type": "exact" | "alias"
+        }
+
+    Returns None when:
+        - no matching alias exists
+        - the name is ambiguous without a server number
+    """
+    if not game_name:
+        return None
+
+    # Use a supplied alias list when available so multiple entries
+    # from the same screenshot do not require repeated database calls.
+    if aliases is None:
+        aliases = load_player_aliases()
+
+    normalized_name = " ".join(str(game_name).strip().split()).casefold()
+
+    matches = []
+
+    for alias in aliases:
+        alias_name = alias.get("game_name")
+
+        if not alias_name:
+            continue
+
+        normalized_alias = " ".join(
+            str(alias_name).strip().split()
+        ).casefold()
+
+        if normalized_alias != normalized_name:
+            continue
+
+        alias_server = alias.get("server_number")
+
+        # If we know the server, require the alias to match it.
+        if server_number is not None:
+            if alias_server != server_number:
+                continue
+
+        matches.append(alias)
+
+    # No match.
+    if not matches:
+        return None
+
+    # If there are multiple matches and we don't have a server number,
+    # don't guess which player it belongs to.
+    player_ids = {row["player_id"] for row in matches}
+
+    if len(player_ids) > 1:
+        return None
+
+    match = matches[0]
+
+    # Determine whether this was the canonical name or an alternate alias.
+    match_type = (
+        "exact"
+        if str(match["game_name"]).strip().casefold() == normalized_name
+        else "alias"
+    )
+
+    return {
+        "player_id": match["player_id"],
+        "game_name": match["game_name"],
+        "server_number": match.get("server_number"),
+        "match_type": match_type,
+    }
+
+
+def save_player_alias(player_id, game_name, server_number=None):
+    """
+    Save a newly discovered player game name/OCR alias.
+
+    Does nothing if the same player/name/server combination already exists.
+
+    Returns the existing or newly created row.
+    """
+    if not game_name:
+        return None
+
+    cleaned_name = " ".join(str(game_name).strip().split())
+
+    # Check whether this exact identity is already recorded.
+    query = (
+        supabase
+        .table("player_aliases")
+        .select("id, player_id, game_name, server_number")
+        .eq("player_id", player_id)
+        .eq("game_name", cleaned_name)
+    )
+
+    if server_number is not None:
+        query = query.eq("server_number", server_number)
+
+    existing = query.execute().data or []
+
+    if existing:
+        return existing[0]
+
+    result = (
+        supabase
+        .table("player_aliases")
+        .insert({
+            "player_id": player_id,
+            "game_name": cleaned_name,
+            "server_number": server_number,
+        })
+        .execute()
+    )
+
+    return result.data[0] if result.data else None
+
+# ════════════════════════════════════════════════════════════════════════════════
 # PAGINATED VIEW
 # ════════════════════════════════════════════════════════════════════════════════
 
@@ -3032,6 +3176,62 @@ async def testtaskparse(
         crop_path = "/tmp/blossomhoard_tasklog_crop.png"
         if os.path.exists(crop_path):
             os.remove(crop_path)
+
+@tree.command(
+    name="testalias",
+    description="Test player alias resolution"
+)
+async def testalias(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        aliases = load_player_aliases()
+
+        tests = [
+            ("Miraea", 5),
+            ("Lily", 4),
+            ("DefinitelyNotAPlayer", 99),
+        ]
+
+        lines = ["🔎 **Player alias test:**"]
+
+        for game_name, server_number in tests:
+            result = resolve_player_alias(
+                game_name,
+                server_number,
+                aliases
+            )
+
+            if result:
+                lines.append(
+                    f"✅ `{game_name}` / s{server_number} "
+                    f"→ player_id `{result['player_id']}` "
+                    f"({result['match_type']})"
+                )
+            else:
+                lines.append(
+                    f"❌ `{game_name}` / s{server_number} "
+                    f"→ no match"
+                )
+
+        lines.append("")
+        lines.append(f"Loaded **{len(aliases)}** alias records.")
+
+        await interaction.followup.send(
+            "\n".join(lines),
+            ephemeral=True
+        )
+
+    except Exception as e:
+        import traceback
+
+        error_details = traceback.format_exc()
+
+        await interaction.followup.send(
+            f"❌ Alias test failed:\n"
+            f"```text\n{error_details[-1800:]}\n```",
+            ephemeral=True
+        )
 
 # ════════════════════════════════════════════════════════════════════════════════
 # RUN
