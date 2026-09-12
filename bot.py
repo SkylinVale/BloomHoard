@@ -4907,6 +4907,13 @@ async def run_importtasklog(
         # ---------------------------------------------------------
 
         player_aliases = load_player_aliases()
+
+        # Add aliases proposed during this import session.
+        # These are temporary and have NOT been saved to Supabase yet.
+        for pending_alias in pending_aliases:
+            if pending_alias not in player_aliases:
+                player_aliases.append(pending_alias)
+        
         blossom_names = load_blossom_names()
 
         lines = [
