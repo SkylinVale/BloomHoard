@@ -2131,14 +2131,33 @@ class TaskPlayerMatchView(discord.ui.View):
         # -----------------------------------------------------
         # All unknown players have now been resolved.
         # -----------------------------------------------------
-
-        await interaction.followup.send(
-            f"{alias_message}\n\n"
-            f"🎉 **All unknown players have been identified!**\n\n"
-            f"Run `/{self.review_view.resume_command}` again with the same screenshot "
-            f"to continue the import test.",
-            ephemeral=True
-        )
+        
+        if (
+            self.review_view.resume_command == "importtasklog"
+            and self.review_view.image is not None
+        ):
+        
+            await interaction.followup.send(
+                f"{alias_message}\n\n"
+                f"🎉 **All unknown players have been identified!**\n\n"
+                f"🔄 **Resuming the import preview...**",
+                ephemeral=True
+            )
+        
+            await run_importtasklog(
+                interaction,
+                self.review_view.image
+            )
+        
+        else:
+        
+            await interaction.followup.send(
+                f"{alias_message}\n\n"
+                f"🎉 **All unknown players have been identified!**\n\n"
+                f"Run `/{self.review_view.resume_command}` again with the same screenshot "
+                f"to continue the import test.",
+                ephemeral=True
+            )
 
 
 class TaskPlayerReviewView(discord.ui.View):
@@ -4669,19 +4688,10 @@ async def testimportresolve(
         except Exception:
             pass
 
-@tree.command(
-    name="importtasklog",
-    description="Preview and import blossoms from a task-log screenshot"
-)
-@app_commands.describe(
-    image="Task-log screenshot to preview"
-)
-async def importtasklog(
+async def run_importtasklog(
     interaction: discord.Interaction,
     image: discord.Attachment
 ):
-    await interaction.response.defer(ephemeral=True)
-
     image_path = f"/tmp/{image.filename}"
     crop_path = "/tmp/blossomhoard_tasklog_import_crop.png"
 
@@ -4745,11 +4755,7 @@ async def importtasklog(
 
         unknown_entries = []
 
-        # These are the actual records that will be inserted if
-        # the staffer presses Confirm Import.
         pending_imports = []
-
-        # Prevent duplicate flowers within this upload.
         pending_keys = set()
 
         new_count = 0
@@ -5023,8 +5029,7 @@ async def importtasklog(
             lines.append("")
             lines.append(
                 "Use **Identify Player** to resolve the "
-                "unrecognized players, then rerun "
-                "`/importtasklog`."
+                "unrecognized players."
             )
 
             view = TaskPlayerReviewView(
@@ -5118,6 +5123,24 @@ async def importtasklog(
 
         except Exception:
             pass
+
+@tree.command(
+    name="importtasklog",
+    description="Preview and import blossoms from a task-log screenshot"
+)
+@app_commands.describe(
+    image="Task-log screenshot to preview"
+)
+async def importtasklog(
+    interaction: discord.Interaction,
+    image: discord.Attachment
+):
+    await interaction.response.defer(ephemeral=True)
+
+    await run_importtasklog(
+        interaction,
+        image
+    )
 
 # ════════════════════════════════════════════════════════════════════════════════
 # RUN
