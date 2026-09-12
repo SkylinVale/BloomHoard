@@ -4073,10 +4073,10 @@ async def testblossomresolve(
 
 @tree.command(
     name="testimportresolve",
-    description="Test complete task-log import resolution"
+    description="Test task-log OCR, player aliases, and blossom resolution"
 )
 @app_commands.describe(
-    image="Upload a task-log screenshot"
+    image="Task-log screenshot to test"
 )
 async def testimportresolve(
     interaction: discord.Interaction,
@@ -4085,56 +4085,61 @@ async def testimportresolve(
     await interaction.response.defer(ephemeral=True)
 
     image_path = f"/tmp/{image.filename}"
+    crop_path = "/tmp/blossomhoard_tasklog_crop.png"
 
     try:
         from PIL import Image
 
+        # ---------------------------------------------------------
+        # Save uploaded image
+        # ---------------------------------------------------------
+
         await image.save(image_path)
+
+        # ---------------------------------------------------------
+        # Crop to the task-log area
+        # ---------------------------------------------------------
 
         img = Image.open(image_path)
 
-        # Same task-log crop used by /testtaskparse.
         w, h = img.size
-        crop = img.crop((
-            int(w * 0.27),
-            int(h * 0.32),
-            int(w * 0.93),
-            int(h * 0.91)
-        ))
 
-        crop_path = "/tmp/blossomhoard_tasklog_crop.png"
+        crop = img.crop(
+            (
+                int(w * 0.27),
+                int(h * 0.32),
+                int(w * 0.93),
+                int(h * 0.91),
+            )
+        )
+
         crop.save(crop_path)
 
-        # -----------------------------------------------------
-        # STEP 1: OCR
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
+        # OCR
+        # ---------------------------------------------------------
 
         ocr_text = await ocr_image(crop_path)
 
-        # -----------------------------------------------------
-        # STEP 2: EXISTING FROZEN PARSER
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
+        # Parse task logs
+        # ---------------------------------------------------------
 
         entries = parse_task_logs(ocr_text)
 
         if not entries:
             await interaction.followup.send(
-                "❌ OCR worked, but no flower task entries "
-                "were detected.",
+                "❌ No task-log entries were detected.",
                 ephemeral=True
             )
             return
 
-        # -----------------------------------------------------
-        # STEP 3: LOAD REFERENCE DATA
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
+        # Load reference data
+        # ---------------------------------------------------------
 
         player_aliases = load_player_aliases()
         blossom_names = load_blossom_names()
-
-        # -----------------------------------------------------
-        # STEP 4: RESOLVE EACH PARSED ENTRY
-        # -----------------------------------------------------
 
         lines = [
             "🌸 **Import resolution test:**"
@@ -4142,20 +4147,18 @@ async def testimportresolve(
 
         unknown_entries = []
 
+        # ---------------------------------------------------------
+        # Resolve every parsed entry
+        # ---------------------------------------------------------
+
         for entry in entries:
 
-            server_number = entry.get(
-                "server_number"
-            )
+            server_number = entry.get("server_number")
 
             lookup_name = (
                 entry.get("ocr_player")
                 or entry.get("game_name")
             )
-
-            # -------------------------------------------------
-            # PLAYER RESOLUTION
-            # -------------------------------------------------
 
             player_result = resolve_player_alias(
                 lookup_name,
@@ -4163,56 +4166,33 @@ async def testimportresolve(
                 player_aliases
             )
 
-            # -------------------------------------------------
-            # BLOSSOM RESOLUTION
-            # -------------------------------------------------
-
             blossom_result = resolve_blossom(
                 entry.get("task_text"),
                 blossom_names
             )
 
-            # -------------------------------------------------
-            # BUILD DISPLAY
-            # -------------------------------------------------
-
             lines.append("")
-
-            action = entry.get(
-                "action",
-                "unknown"
-            )
-
-            task_number = entry.get(
-                "task_number"
-            )
-
-            task_text = entry.get(
-                "task_text",
-                ""
-            )
-
             lines.append(
-                f"**Task {task_number} — {action}**"
+                f"**Task {entry.get('task_number')} — "
+                f"{entry.get('action')}**"
             )
 
-            # -------------------------------------------------
-            # PLAYER RESULT
-            # -------------------------------------------------
+            # -----------------------------------------------------
+            # Player resolution
+            # -----------------------------------------------------
 
             if player_result:
 
-                if player_result["match_type"] == "exact":
-                    player_label = "exact"
-                else:
-                    player_label = "alias"
+                match_type = player_result.get(
+                    "match_type",
+                    "unknown"
+                )
 
                 lines.append(
                     f"👤 `{lookup_name}` / s{server_number} "
                     f"→ **{player_result['game_name']}** "
-                    f"(player_id "
-                    f"`{player_result['player_id']}`, "
-                    f"{player_label})"
+                    f"(player_id {player_result['player_id']}, "
+                    f"{match_type})"
                 )
 
             else:
@@ -4224,51 +4204,59 @@ async def testimportresolve(
 
                 unknown_entries.append(entry)
 
-            # -------------------------------------------------
-            # BLOSSOM RESULT
-            # -------------------------------------------------
+            # -----------------------------------------------------
+            # Blossom resolution
+            # -----------------------------------------------------
 
-            if not blossom_result:
+            if blossom_result:
 
-                lines.append(
-                    f"🌸 `{task_text}` "
-                    f"→ ❌ no blossom data"
+                confidence = blossom_result.get(
+                    "confidence",
+                    0
                 )
 
-            elif blossom_result["blossom"] is None:
-
-                lines.append(
-                    f"🌸 `{task_text}` "
-                    f"→ ❓ **BLOSSOM NEEDS REVIEW** "
-                    f"({blossom_result['score']:.0%})"
+                match_type = blossom_result.get(
+                    "match_type",
+                    "unknown"
                 )
+
+                resolved_blossom = blossom_result.get(
+                    "blossom"
+                )
+
+                if resolved_blossom:
+
+                    lines.append(
+                        f"🌸 `{entry.get('task_text')}` "
+                        f"→ **{resolved_blossom}** "
+                        f"({confidence:.0%}, {match_type})"
+                    )
+
+                else:
+
+                    lines.append(
+                        f"🌸 `{entry.get('task_text')}` "
+                        f"→ ❓ **BLOSSOM NEEDS REVIEW**"
+                    )
 
             else:
 
-                review_marker = (
-                    " ⚠️ REVIEW"
-                    if blossom_result["needs_review"]
-                    else ""
-                )
-
                 lines.append(
-                    f"🌸 `{task_text}` "
-                    f"→ **{blossom_result['blossom']}** "
-                    f"({blossom_result['score']:.0%}, "
-                    f"{blossom_result['match_type']})"
-                    f"{review_marker}"
+                    f"🌸 `{entry.get('task_text')}` "
+                    f"→ ❓ **BLOSSOM NEEDS REVIEW**"
                 )
 
-            # -------------------------------------------------
-            # IMPORT / OWNERSHIP STATUS
-            # -------------------------------------------------
+            # -----------------------------------------------------
+            # Ownership check
+            # -----------------------------------------------------
 
             if (
                 player_result
                 and blossom_result
-                and blossom_result["blossom"]
-                and not blossom_result["needs_review"]
+                and blossom_result.get("blossom")
+                and not blossom_result.get("needs_review")
             ):
+
                 player_id = player_result["player_id"]
 
                 current_gamename = get_current_player_gamename(
@@ -4276,80 +4264,151 @@ async def testimportresolve(
                 )
 
                 if not current_gamename:
+
                     lines.append(
-                        "➡️ ❌ **NOT READY — PLAYER NOT FOUND**"
-                    )
-                    continue
-
-                lines.append(
-                    f"🏷️ Current florist name: "
-                    f"**{current_gamename}**"
-                )
-
-                owned_blossoms = load_owned_blossoms(
-                    current_gamename
-                )
-
-                canonical_blossom = blossom_result["blossom"]
-
-                if canonical_blossom in owned_blossoms:
-                    lines.append(
-                        "➡️ ⚠️ **ALREADY OWNED — WOULD SKIP**"
+                        "➡️ ❌ **NOT READY — "
+                        "CURRENT FLORIST NAME NOT FOUND**"
                     )
 
                 else:
+
                     lines.append(
-                        "➡️ 🟢 **NEW — READY TO IMPORT**"
+                        f"🏷️ Current florist name: "
+                        f"**{current_gamename}**"
                     )
 
+                    owned_blossoms = load_owned_blossoms(
+                        current_gamename
+                    )
+
+                    canonical_blossom = blossom_result[
+                        "blossom"
+                    ]
+
+                    if canonical_blossom in owned_blossoms:
+
+                        lines.append(
+                            "➡️ ⚠️ **ALREADY OWNED — "
+                            "WOULD SKIP**"
+                        )
+
+                    else:
+
+                        lines.append(
+                            "➡️ 🌸 **NEW — READY TO IMPORT**"
+                        )
+
             else:
+
                 lines.append(
                     "➡️ 🚧 **NOT READY — NEEDS REVIEW**"
                 )
 
-        # -----------------------------------------------------
-        # FINAL TEST STATUS
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
+        # Reference data summary
+        # ---------------------------------------------------------
 
         lines.append("")
         lines.append(
             f"Reference data: "
-            f"**{len(player_aliases)}** player aliases, "
-            f"**{len(blossom_names)}** blossoms."
+            f"{len(player_aliases)} player aliases, "
+            f"{len(blossom_names)} blossoms."
         )
 
+        # ---------------------------------------------------------
+        # Player review status
+        # ---------------------------------------------------------
+
         if unknown_entries:
+
             lines.append("")
             lines.append(
-                "🔍 **Select the correct florist below to "
-                "save an alias.**"
+                "🔍 **Select the correct florist below "
+                "to save an alias.**"
             )
+
         else:
+
             lines.append("")
             lines.append(
                 "✅ **All players resolved.**"
             )
 
+        # ---------------------------------------------------------
+        # Safety notice
+        # ---------------------------------------------------------
+
         lines.append("")
         lines.append(
-            "🔒 **TEST ONLY — no ownership records were changed.**"
+            "🔒 **TEST ONLY — no ownership records "
+            "were changed.**"
         )
 
         output = "\n".join(lines)
 
+        # ---------------------------------------------------------
+        # Send result
+        #
+        # IMPORTANT:
+        # Discord.py does not accept view=None when the view
+        # parameter is explicitly supplied. Only pass a View
+        # when one is actually needed.
+        # ---------------------------------------------------------
+
         if unknown_entries:
-            view = TaskPlayerReviewView(player_aliases, unknown_entries, output)
+
+            view = TaskPlayerReviewView(
+                player_aliases,
+                unknown_entries,
+                output
+            )
 
             await interaction.followup.send(
                 output[:1900],
                 ephemeral=True,
                 view=view
             )
+
         else:
+
             await interaction.followup.send(
                 output[:1900],
                 ephemeral=True
             )
+
+    except Exception as e:
+
+        print(
+            "ERROR IN /testimportresolve:"
+        )
+
+        import traceback
+        traceback.print_exc()
+
+        try:
+            await interaction.followup.send(
+                "❌ **Import resolution test failed:**\n"
+                f"```text\n{traceback.format_exc()[-3500:]}\n```",
+                ephemeral=True
+            )
+        except Exception:
+            pass
+
+    finally:
+
+        # ---------------------------------------------------------
+        # Clean up temporary files
+        # ---------------------------------------------------------
+
+        try:
+            if os.path.exists(image_path):
+                os.remove(image_path)
+
+            if os.path.exists(crop_path):
+                os.remove(crop_path)
+
+        except Exception:
+            pass
 
 # ════════════════════════════════════════════════════════════════════════════════
 # RUN
