@@ -1802,6 +1802,210 @@ def resolve_blossom(blossom_text, blossom_names=None):
     }
 
 # ════════════════════════════════════════════════════════════════════════════════
+# TASK-LOG PLAYER REVIEW
+# ════════════════════════════════════════════════════════════════════════════════
+
+def load_current_players():
+    """
+    Load current florists for the player-selection dropdown.
+    Returns player records with stable player IDs.
+    """
+
+    player_supabase = create_client(
+        SUPABASE_URL,
+        SUPABASE_KEY
+    )
+
+    return (
+        player_supabase
+        .table("players")
+        .select("id, gamename")
+        .order("gamename")
+        .execute()
+        .data
+        or []
+    )
+
+
+def save_player_alias(
+    player_id,
+    game_name,
+    server_number
+):
+    """
+    Save an OCR-discovered game identity as an alias for a player.
+
+    If the exact alias already exists, do nothing.
+    """
+
+    alias_supabase = create_client(
+        SUPABASE_URL,
+        SUPABASE_KEY
+    )
+
+    existing = (
+        alias_supabase
+        .table("player_aliases")
+        .select("id")
+        .eq("game_name", game_name)
+        .eq("server_number", server_number)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+
+    if existing:
+        return False
+
+    (
+        alias_supabase
+        .table("player_aliases")
+        .insert({
+            "player_id": player_id,
+            "game_name": game_name,
+            "server_number": server_number
+        })
+        .execute()
+    )
+
+    return True
+
+
+class TaskPlayerSelect(discord.ui.Select):
+    """
+    Dropdown used when OCR finds a player identity that is not
+    currently recognized.
+    """
+
+    def __init__(
+        self,
+        parent_view,
+        unknown_entry,
+        players
+    ):
+        self.parent_view = parent_view
+        self.unknown_entry = unknown_entry
+
+        options = [
+            discord.SelectOption(
+                label=player["gamename"][:100],
+                value=str(player["id"])
+            )
+            for player in players[:25]
+            if player.get("gamename")
+        ]
+
+        super().__init__(
+            placeholder="Choose the correct florist...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
+    async def callback(
+        self,
+        interaction: discord.Interaction
+    ):
+        await interaction.response.defer()
+
+        selected_player_id = int(self.values[0])
+
+        selected_player = next(
+            (
+                player
+                for player in self.parent_view.players
+                if player["id"] == selected_player_id
+            ),
+            None
+        )
+
+        if not selected_player:
+            await interaction.followup.send(
+                "❌ Could not find that florist.",
+                ephemeral=True
+            )
+            return
+
+        lookup_name = (
+            self.unknown_entry.get("ocr_player")
+            or self.unknown_entry.get("game_name")
+        )
+
+        server_number = self.unknown_entry.get(
+            "server_number"
+        )
+
+        created = save_player_alias(
+            selected_player_id,
+            lookup_name,
+            server_number
+        )
+
+        if created:
+            status = (
+                f"✅ Saved alias: **{lookup_name}** / "
+                f"s{server_number} → "
+                f"**{selected_player['gamename']}**"
+            )
+        else:
+            status = (
+                f"ℹ️ Alias already existed: **{lookup_name}** / "
+                f"s{server_number}"
+            )
+
+        # Add the new alias to the in-memory list so the current
+        # test can immediately resolve the player without another
+        # database request.
+        self.parent_view.player_aliases.append({
+            "player_id": selected_player_id,
+            "game_name": lookup_name,
+            "server_number": server_number
+        })
+
+        # Disable this selector so it cannot accidentally be
+        # submitted a second time.
+        self.disabled = True
+
+        await interaction.edit_original_response(
+            content=(
+                f"{self.parent_view.base_output}\n\n"
+                f"👤 **Player resolution:**\n"
+                f"{status}\n\n"
+                f"🔄 Re-run `/testimportresolve` to verify the "
+                f"saved alias."
+            ),
+            view=self.parent_view
+        )
+
+
+class TaskPlayerReviewView(discord.ui.View):
+    """
+    Holds player-selection dropdowns for unresolved task-log players.
+    """
+
+    def __init__(
+        self,
+        player_aliases,
+        unknown_entries,
+        base_output
+    ):
+        super().__init__(timeout=300)
+
+        self.player_aliases = player_aliases
+        self.players = load_current_players()
+        self.base_output = base_output
+
+        for entry in unknown_entries:
+            self.add_item(
+                TaskPlayerSelect(
+                    self,
+                    entry,
+                    self.players
+                )
+            )
+
+# ════════════════════════════════════════════════════════════════════════════════
 # PAGINATED VIEW
 # ════════════════════════════════════════════════════════════════════════════════
 
@@ -3762,12 +3966,12 @@ async def testimportresolve(
             return
 
         # -----------------------------------------------------
-        # STEP 3: LOAD REFERENCE DATA ONCE
+        # STEP 3: LOAD REFERENCE DATA
         # -----------------------------------------------------
-       
+
         player_aliases = load_player_aliases()
         blossom_names = load_blossom_names()
-        
+
         # -----------------------------------------------------
         # STEP 4: RESOLVE EACH PARSED ENTRY
         # -----------------------------------------------------
@@ -3776,23 +3980,14 @@ async def testimportresolve(
             "🌸 **Import resolution test:**"
         ]
 
+        unknown_entries = []
+
         for entry in entries:
 
             server_number = entry.get(
                 "server_number"
             )
 
-            # The parser may preserve the raw OCR player
-            # separately from game_name.
-            #
-            # For normal recognized players:
-            #     game_name = "Lily"
-            #     ocr_player = "Lily"
-            #
-            # For an unknown player:
-            #     game_name = "<unknown player>"
-            #     ocr_player = "CrystalAce"
-            #
             lookup_name = (
                 entry.get("ocr_player")
                 or entry.get("game_name")
@@ -3867,6 +4062,8 @@ async def testimportresolve(
                     f"→ ❓ **PLAYER NEEDS REVIEW**"
                 )
 
+                unknown_entries.append(entry)
+
             # -------------------------------------------------
             # BLOSSOM RESULT
             # -------------------------------------------------
@@ -3923,7 +4120,7 @@ async def testimportresolve(
                         "➡️ ❌ **NOT READY — PLAYER NOT FOUND**"
                     )
                     continue
-                
+
                 lines.append(
                     f"🏷️ Current florist name: "
                     f"**{current_gamename}**"
@@ -3950,6 +4147,10 @@ async def testimportresolve(
                     "➡️ 🚧 **NOT READY — NEEDS REVIEW**"
                 )
 
+        # -----------------------------------------------------
+        # FINAL TEST STATUS
+        # -----------------------------------------------------
+
         lines.append("")
         lines.append(
             f"Reference data: "
@@ -3957,14 +4158,42 @@ async def testimportresolve(
             f"**{len(blossom_names)}** blossoms."
         )
 
+        if unknown_entries:
+            lines.append("")
+            lines.append(
+                "🔍 **Select the correct florist below to "
+                "save an alias.**"
+            )
+        else:
+            lines.append("")
+            lines.append(
+                "✅ **All players resolved.**"
+            )
+
         lines.append("")
         lines.append(
-            "🔒 **TEST ONLY — no database records were changed.**"
+            "🔒 **TEST ONLY — no ownership records were changed.**"
         )
 
+        output = "\n".join(lines)
+
+        # -----------------------------------------------------
+        # PLAYER REVIEW UI
+        # -----------------------------------------------------
+
+        view = None
+
+        if unknown_entries:
+            view = TaskPlayerReviewView(
+                player_aliases,
+                unknown_entries,
+                output
+            )
+
         await interaction.followup.send(
-            "\n".join(lines)[:1900],
-            ephemeral=True
+            output[:1900],
+            ephemeral=True,
+            view=view
         )
 
     except Exception:
