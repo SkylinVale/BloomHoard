@@ -2161,7 +2161,7 @@ class TaskPlayerMatchView(discord.ui.View):
     
         if (
             self.review_view.resume_command == "importtasklog"
-            and self.review_view.image is not None
+            and self.review_view.session is not None
         ):
     
             await interaction.followup.send(
@@ -2173,8 +2173,7 @@ class TaskPlayerMatchView(discord.ui.View):
     
             await run_importtasklog(
                 interaction,
-                self.review_view.image,
-                self.review_view.pending_aliases
+                self.review_view.session
             )
     
         else:
@@ -2204,8 +2203,7 @@ class TaskPlayerReviewView(discord.ui.View):
         unknown_entries,
         base_output,
         resume_command="testimportresolve",
-        image=None,
-        pending_aliases=None
+        session=None,
     ):
         super().__init__(timeout=600)
 
@@ -2213,15 +2211,16 @@ class TaskPlayerReviewView(discord.ui.View):
         self.unknown_entries = list(unknown_entries)
         self.base_output = base_output
         self.resume_command = resume_command
-        self.image = image
+        self.session = session
 
         # Aliases proposed during THIS import.
         # These are not written to Supabase until Confirm Import.
-        self.pending_aliases = (
-            pending_aliases
-            if pending_aliases is not None
-            else []
-        )
+        if self.session is not None:
+            self.pending_aliases = (
+                self.session.pending_aliases
+            )
+        else:
+            self.pending_aliases = []
 
         self.players = load_current_players()
 
@@ -4845,55 +4844,92 @@ async def testimportresolve(
         except Exception:
             pass
 
+class TaskImportSession:
+    """
+    Temporary staging area for one BlossomHoard task-log import.
+
+    Nothing in this object is written to Supabase until the
+    staffer explicitly confirms the import.
+    """
+
+    def __init__(self, images):
+        self.images = list(images)
+
+        # Aliases proposed during this import.
+        self.pending_aliases = []
+
+        # Ownership records proposed during this import.
+        self.pending_imports = []
+
 async def run_importtasklog(
     interaction: discord.Interaction,
-    image: discord.Attachment,
-    pending_aliases=None
+    session: TaskImportSession
 ):
-    image_path = f"/tmp/{image.filename}"
-    crop_path = "/tmp/blossomhoard_tasklog_import_crop.png"
+    image_paths = []
+    crop_paths = []
 
     try:
-        if pending_aliases is None:
-            pending_aliases = []
         from PIL import Image
 
         # ---------------------------------------------------------
-        # Save uploaded image
+        # Process all screenshots in this import session
         # ---------------------------------------------------------
 
-        await image.save(image_path)
+        entries = []
 
-        # ---------------------------------------------------------
-        # Crop to the task-log area
-        # ---------------------------------------------------------
+        for index, image in enumerate(session.images):
 
-        img = Image.open(image_path)
-
-        w, h = img.size
-
-        crop = img.crop(
-            (
-                int(w * 0.27),
-                int(h * 0.32),
-                int(w * 0.93),
-                int(h * 0.91),
+            image_path = (
+                f"/tmp/blossomhoard_import_{index}_{image.filename}"
             )
-        )
 
-        crop.save(crop_path)
+            crop_path = (
+                f"/tmp/blossomhoard_tasklog_import_crop_{index}.png"
+            )
 
-        # ---------------------------------------------------------
-        # OCR
-        # ---------------------------------------------------------
+            image_paths.append(image_path)
+            crop_paths.append(crop_path)
 
-        ocr_text = await ocr_image(crop_path)
+            # -----------------------------------------------------
+            # Save uploaded image
+            # -----------------------------------------------------
 
-        # ---------------------------------------------------------
-        # Parse task logs
-        # ---------------------------------------------------------
+            await image.save(image_path)
 
-        entries = parse_task_logs(ocr_text)
+            # -----------------------------------------------------
+            # Crop to the task-log area
+            # -----------------------------------------------------
+
+            img = Image.open(image_path)
+
+            w, h = img.size
+
+            crop = img.crop(
+                (
+                    int(w * 0.27),
+                    int(h * 0.32),
+                    int(w * 0.93),
+                    int(h * 0.91),
+                )
+            )
+
+            crop.save(crop_path)
+
+            # -----------------------------------------------------
+            # OCR
+            # -----------------------------------------------------
+
+            ocr_text = await ocr_image(crop_path)
+
+            # -----------------------------------------------------
+            # Parse task logs
+            # -----------------------------------------------------
+
+            image_entries = parse_task_logs(
+                ocr_text
+            )
+
+            entries.extend(image_entries)
 
         if not entries:
             await interaction.followup.send(
@@ -4910,7 +4946,7 @@ async def run_importtasklog(
 
         # Add aliases proposed during this import session.
         # These are temporary and have NOT been saved to Supabase yet.
-        for pending_alias in pending_aliases:
+        for pending_alias in session.pending_aliases:
             if pending_alias not in player_aliases:
                 player_aliases.append(pending_alias)
         
@@ -4922,7 +4958,6 @@ async def run_importtasklog(
 
         unknown_entries = []
 
-        pending_imports = []
         pending_keys = set()
 
         new_count = 0
@@ -5204,8 +5239,7 @@ async def run_importtasklog(
                 unknown_entries,
                 "\n".join(lines),
                 resume_command="importtasklog",
-                image=image,
-                pending_aliases=pending_aliases
+                session=session
             )
 
             await interaction.followup.send(
@@ -5236,8 +5270,8 @@ async def run_importtasklog(
             )
 
             view = TaskImportConfirmView(
-                pending_imports,
-                pending_aliases
+                session.pending_imports,
+                session.pending_aliases
             )
 
             await interaction.followup.send(
@@ -5275,7 +5309,7 @@ async def run_importtasklog(
             )
         except Exception:
             pass
-
+            
     finally:
 
         # ---------------------------------------------------------
@@ -5284,31 +5318,54 @@ async def run_importtasklog(
 
         try:
 
-            if os.path.exists(image_path):
-                os.remove(image_path)
+            for image_path in image_paths:
+                if os.path.exists(image_path):
+                    os.remove(image_path)
 
-            if os.path.exists(crop_path):
-                os.remove(crop_path)
+            for crop_path in crop_paths:
+                if os.path.exists(crop_path):
+                    os.remove(crop_path)
 
         except Exception:
             pass
 
 @tree.command(
     name="importtasklog",
-    description="Preview and import blossoms from a task-log screenshot"
+    description="Preview and import blossoms from 1-4 task-log screenshots"
 )
 @app_commands.describe(
-    image="Task-log screenshot to preview"
+    image1="Task-log screenshot 1",
+    image2="Task-log screenshot 2 (optional)",
+    image3="Task-log screenshot 3 (optional)",
+    image4="Task-log screenshot 4 (optional)"
 )
 async def importtasklog(
     interaction: discord.Interaction,
-    image: discord.Attachment
+    image1: discord.Attachment,
+    image2: discord.Attachment | None = None,
+    image3: discord.Attachment | None = None,
+    image4: discord.Attachment | None = None
 ):
     await interaction.response.defer(ephemeral=True)
 
+    images = [
+        image
+        for image in (
+            image1,
+            image2,
+            image3,
+            image4
+        )
+        if image is not None
+    ]
+
+    session = TaskImportSession(
+        images
+    )
+
     await run_importtasklog(
         interaction,
-        image
+        session
     )
 
 # ════════════════════════════════════════════════════════════════════════════════
