@@ -5257,13 +5257,21 @@ async def run_importtasklog(
             )
 
         elif review_count:
-
             lines.append("")
             lines.append(
-                "⚠️ **Import cannot proceed until all "
-                "entries are resolved.**"
+                "⚠️ **Import stopped — one or more blossom names "
+                "could not be matched.**"
             )
-
+            lines.append("")
+            lines.append(
+                "Please check the problematic flower name(s) in the "
+                "game and BlossomHoard's blossom reference data."
+            )
+            lines.append(
+                "If the game has renamed a flower, update the blossom "
+                "reference data first, then run `/importtasklog` again."
+            )
+        
             await interaction.followup.send(
                 "\n".join(lines)[:1900],
                 ephemeral=True
