@@ -2135,7 +2135,7 @@ class TaskPlayerMatchView(discord.ui.View):
         await interaction.followup.send(
             f"{alias_message}\n\n"
             f"🎉 **All unknown players have been identified!**\n\n"
-            f"Run `/{self.resume_command}` again with the same screenshot "
+            f"Run `/{self.review_view.resume_command}` again with the same screenshot "
             f"to continue the import test.",
             ephemeral=True
         )
