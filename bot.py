@@ -1507,6 +1507,196 @@ def save_player_alias(player_id, game_name, server_number=None):
     return result.data[0] if result.data else None
 
 # ════════════════════════════════════════════════════════════════════════════════
+# BLOSSOM RESOLUTION HELPERS
+# ════════════════════════════════════════════════════════════════════════════════
+
+def load_blossom_names():
+    """
+    Load all canonical blossom names from the blossoms table.
+
+    The database contains the authoritative spelling of every blossom.
+    """
+    return [
+        row["name"]
+        for row in (
+            supabase
+            .table("blossoms")
+            .select("name")
+            .execute()
+            .data
+            or []
+        )
+        if row.get("name")
+    ]
+
+
+def normalize_blossom_name(value: str) -> str:
+    """
+    Normalize a blossom name for comparison.
+
+    This does NOT modify the canonical database name.
+    It only creates a comparison-friendly version by:
+        - lowercasing
+        - replacing punctuation with spaces
+        - removing stray OCR symbols
+        - collapsing repeated whitespace
+    """
+    if not value:
+        return ""
+
+    value = str(value).lower()
+
+    # Treat punctuation/OCR separators as spaces.
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+
+    # Collapse repeated whitespace.
+    value = re.sub(r"\s+", " ", value).strip()
+
+    return value
+
+
+def resolve_blossom(blossom_text, blossom_names=None):
+    """
+    Resolve OCR flower text against the canonical blossoms table.
+
+    Exact normalized matches are accepted immediately.
+
+    If there is no exact match, compare the OCR text against every
+    canonical blossom using character-sequence similarity.
+
+    Returns:
+        {
+            "blossom": str,
+            "score": float,
+            "match_type": "exact" | "fuzzy",
+            "needs_review": bool,
+        }
+
+    Returns None when no blossom names are available.
+
+    Confidence rules are intentionally conservative:
+        >= 0.90  -> confident fuzzy match
+        0.80-0.89 -> possible match; staff review required
+        < 0.80 -> unresolved
+    """
+
+    from difflib import SequenceMatcher
+
+    if not blossom_text:
+        return None
+
+    if blossom_names is None:
+        blossom_names = load_blossom_names()
+
+    if not blossom_names:
+        return None
+
+    normalized_input = normalize_blossom_name(
+        blossom_text
+    )
+
+    if not normalized_input:
+        return None
+
+    # ---------------------------------------------------------
+    # Exact normalized match
+    # ---------------------------------------------------------
+
+    exact_matches = [
+        name
+        for name in blossom_names
+        if normalize_blossom_name(name) == normalized_input
+    ]
+
+    if len(exact_matches) == 1:
+        return {
+            "blossom": exact_matches[0],
+            "score": 1.0,
+            "match_type": "exact",
+            "needs_review": False,
+        }
+
+    # ---------------------------------------------------------
+    # Fuzzy comparison
+    # ---------------------------------------------------------
+
+    scored = []
+
+    for name in blossom_names:
+
+        normalized_candidate = normalize_blossom_name(
+            name
+        )
+
+        if not normalized_candidate:
+            continue
+
+        score = SequenceMatcher(
+            None,
+            normalized_input,
+            normalized_candidate,
+        ).ratio()
+
+        scored.append(
+            (score, name)
+        )
+
+    if not scored:
+        return None
+
+    # Highest score first.
+    scored.sort(
+        key=lambda item: item[0],
+        reverse=True
+    )
+
+    best_score, best_name = scored[0]
+
+    # ---------------------------------------------------------
+    # No sufficiently plausible match
+    # ---------------------------------------------------------
+
+    if best_score < 0.80:
+        return {
+            "blossom": None,
+            "score": best_score,
+            "match_type": "unresolved",
+            "needs_review": True,
+        }
+
+    # ---------------------------------------------------------
+    # Determine whether the best match is sufficiently ahead
+    # of the second-best candidate.
+    #
+    # We don't want:
+    #
+    #     Candidate A = 86%
+    #     Candidate B = 85%
+    #
+    # to be silently accepted.
+    # ---------------------------------------------------------
+
+    second_score = (
+        scored[1][0]
+        if len(scored) > 1
+        else 0.0
+    )
+
+    score_gap = best_score - second_score
+
+    needs_review = (
+        best_score < 0.90
+        or score_gap < 0.05
+    )
+
+    return {
+        "blossom": best_name,
+        "score": best_score,
+        "match_type": "fuzzy",
+        "needs_review": needs_review,
+    }
+
+# ════════════════════════════════════════════════════════════════════════════════
 # PAGINATED VIEW
 # ════════════════════════════════════════════════════════════════════════════════
 
@@ -3277,6 +3467,128 @@ async def testplayerresolve(
 
         await interaction.followup.send(
             f"❌ Player resolution test failed:\n"
+            f"```text\n{error_details[-1800:]}\n```",
+            ephemeral=True
+        )
+
+    finally:
+        if os.path.exists(image_path):
+            os.remove(image_path)
+
+        crop_path = "/tmp/blossomhoard_tasklog_crop.png"
+
+        if os.path.exists(crop_path):
+            os.remove(crop_path)
+
+@tree.command(
+    name="testblossomresolve",
+    description="Test blossom name resolution"
+)
+@app_commands.describe(
+    image="Upload a task-log screenshot"
+)
+async def testblossomresolve(
+    interaction: discord.Interaction,
+    image: discord.Attachment
+):
+    await interaction.response.defer(ephemeral=True)
+
+    image_path = f"/tmp/{image.filename}"
+
+    try:
+        from PIL import Image
+
+        await image.save(image_path)
+
+        img = Image.open(image_path)
+
+        # Same task-log crop used by /testtaskparse.
+        w, h = img.size
+        crop = img.crop((
+            int(w * 0.27),
+            int(h * 0.32),
+            int(w * 0.93),
+            int(h * 0.91)
+        ))
+
+        crop_path = "/tmp/blossomhoard_tasklog_crop.png"
+        crop.save(crop_path)
+
+        # Existing frozen OCR/parser pipeline.
+        ocr_text = await ocr_image(crop_path)
+        entries = parse_task_logs(ocr_text)
+
+        if not entries:
+            await interaction.followup.send(
+                "❌ OCR worked, but no flower task entries "
+                "were detected.",
+                ephemeral=True
+            )
+            return
+
+        # Load canonical blossom names ONCE.
+        blossom_names = load_blossom_names()
+
+        lines = [
+            "🌸 **Blossom resolution test:**"
+        ]
+
+        for entry in entries:
+
+            flower_text = entry.get("task_text")
+
+            result = resolve_blossom(
+                flower_text,
+                blossom_names
+            )
+
+            if not result:
+                lines.append(
+                    f"❌ `{flower_text}` "
+                    f"→ no blossom data"
+                )
+                continue
+
+            if result["blossom"] is None:
+                lines.append(
+                    f"❓ `{flower_text}` "
+                    f"→ unresolved "
+                    f"({result['score']:.0%})"
+                )
+                continue
+
+            review_marker = (
+                " ⚠️ REVIEW"
+                if result["needs_review"]
+                else ""
+            )
+
+            lines.append(
+                f"✅ `{flower_text}` "
+                f"→ **{result['blossom']}** "
+                f"({result['score']:.0%}, "
+                f"{result['match_type']})"
+                f"{review_marker}"
+            )
+
+        lines.append("")
+        lines.append(
+            f"Loaded **{len(blossom_names)}** "
+            f"canonical blossoms."
+        )
+
+        await interaction.followup.send(
+            "\n".join(lines)[:1900],
+            ephemeral=True
+        )
+
+    except Exception:
+        import traceback
+
+        error_details = traceback.format_exc()
+
+        await interaction.followup.send(
+            f"❌ Blossom resolution test failed:\n"
             f"```text\n{error_details[-1800:]}\n```",
             ephemeral=True
         )
