@@ -1336,7 +1336,7 @@ async def resolve_game_identity(server_number: int, game_name: str):
     game_name = game_name.strip()
 
     link = (
-        supabase.table("player_game_names")
+        supabase.table("player_aliases")
         .select("player_id")
         .eq("server_number", server_number)
         .eq("game_name", game_name)
@@ -2438,7 +2438,7 @@ async def link_name(
 
     # Make sure this server/name combination isn't already linked
     existing = (
-        supabase.table("player_game_names")
+        supabase.table("player_aliases")
         .select("id, player_id")
         .eq("server_number", server_number)
         .eq("game_name", game_name)
@@ -2460,7 +2460,7 @@ async def link_name(
         return
 
     # Create the link
-    supabase.table("player_game_names").insert({
+    supabase.table("player_aliases").insert({
         "player_id": player_id,
         "server_number": server_number,
         "game_name": game_name
