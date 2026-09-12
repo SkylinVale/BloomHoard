@@ -1516,6 +1516,68 @@ def save_player_alias(player_id, game_name, server_number=None):
     return result.data[0] if result.data else None
 
 # ════════════════════════════════════════════════════════════════════════════════
+# PLAYER / OWNERSHIP HELPERS
+# ════════════════════════════════════════════════════════════════════════════════
+
+def get_current_player_gamename(player_id):
+    """
+    Get the player's current canonical gamename from the players table.
+
+    The player_id is the stable identity. The gamename is what the
+    existing ownership table uses as its foreign-key value.
+    """
+
+    player_supabase = create_client(
+        SUPABASE_URL,
+        SUPABASE_KEY
+    )
+
+    rows = (
+        player_supabase
+        .table("players")
+        .select("id, gamename")
+        .eq("id", player_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+
+    if not rows:
+        return None
+
+    return rows[0].get("gamename")
+
+
+def load_owned_blossoms(gamename):
+    """
+    Load the blossoms currently owned by a florist.
+
+    Returns a set so duplicate checks are fast.
+    """
+
+    ownership_supabase = create_client(
+        SUPABASE_URL,
+        SUPABASE_KEY
+    )
+
+    rows = (
+        ownership_supabase
+        .table("ownership")
+        .select("blossom")
+        .eq("gamename", gamename)
+        .execute()
+        .data
+        or []
+    )
+
+    return {
+        row["blossom"]
+        for row in rows
+        if row.get("blossom")
+    }
+
+# ════════════════════════════════════════════════════════════════════════════════
 # BLOSSOM RESOLUTION HELPERS
 # ════════════════════════════════════════════════════════════════════════════════
 
@@ -3841,7 +3903,7 @@ async def testimportresolve(
                 )
 
             # -------------------------------------------------
-            # IMPORT STATUS
+            # IMPORT / OWNERSHIP STATUS
             # -------------------------------------------------
 
             if (
@@ -3850,9 +3912,38 @@ async def testimportresolve(
                 and blossom_result["blossom"]
                 and not blossom_result["needs_review"]
             ):
-                lines.append(
-                    "➡️ **READY TO IMPORT**"
+                player_id = player_result["player_id"]
+
+                current_gamename = get_current_player_gamename(
+                    player_id
                 )
+
+                if not current_gamename:
+                    lines.append(
+                        "➡️ ❌ **NOT READY — PLAYER NOT FOUND**"
+                    )
+                    continue
+                
+                lines.append(
+                    f"🏷️ Current florist name: "
+                    f"**{current_gamename}**"
+                )
+
+                owned_blossoms = load_owned_blossoms(
+                    current_gamename
+                )
+
+                canonical_blossom = blossom_result["blossom"]
+
+                if canonical_blossom in owned_blossoms:
+                    lines.append(
+                        "➡️ ⚠️ **ALREADY OWNED — WOULD SKIP**"
+                    )
+
+                else:
+                    lines.append(
+                        "➡️ 🟢 **NEW — READY TO IMPORT**"
+                    )
 
             else:
                 lines.append(
