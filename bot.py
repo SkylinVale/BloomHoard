@@ -3630,16 +3630,16 @@ async def testblossomresolve(
 
 @tree.command(
     name="testfuzzyflower",
-    description="Test fuzzy blossom matching with similar names"
+    description="Test fuzzy blossom matching"
 )
 async def testfuzzyflower(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     try:
+        from difflib import SequenceMatcher
+
         blossom_names = load_blossom_names()
 
-        # Deliberately damaged names, including flowers with
-        # similar names in the database.
         tests = [
             "Pink Astilb",
             "Pale Pink Astilb",
@@ -3652,41 +3652,56 @@ async def testfuzzyflower(interaction: discord.Interaction):
         ]
 
         lines = [
-            "🧪 **Similar-blossom fuzzy test:**"
+            "🧪 **Similar-blossom diagnostic:**"
         ]
 
         for test_text in tests:
 
-            result = resolve_blossom(
-                test_text,
-                blossom_names
+            normalized_input = normalize_blossom_name(
+                test_text
             )
 
-            if not result:
-                lines.append(
-                    f"❌ `{test_text}` → no blossom data"
-                )
-                continue
+            scored = []
 
-            if result["blossom"] is None:
-                lines.append(
-                    f"❓ `{test_text}` → unresolved "
-                    f"({result['score']:.0%})"
-                )
-                continue
+            for name in blossom_names:
 
-            review_marker = (
-                " ⚠️ REVIEW"
-                if result["needs_review"]
-                else ""
+                normalized_candidate = normalize_blossom_name(
+                    name
+                )
+
+                if not normalized_candidate:
+                    continue
+
+                score = SequenceMatcher(
+                    None,
+                    normalized_input,
+                    normalized_candidate,
+                ).ratio()
+
+                scored.append(
+                    (score, name)
+                )
+
+            scored.sort(
+                key=lambda item: item[0],
+                reverse=True
             )
 
+            top_matches = scored[:3]
+
+            lines.append("")
             lines.append(
-                f"🔎 `{test_text}` → "
-                f"**{result['blossom']}** "
-                f"({result['score']:.0%})"
-                f"{review_marker}"
+                f"**`{test_text}`**"
             )
+
+            for index, (score, name) in enumerate(
+                top_matches,
+                start=1
+            ):
+                lines.append(
+                    f"{index}. {name} — "
+                    f"{score:.0%}"
+                )
 
         lines.append("")
         lines.append(
@@ -3705,7 +3720,7 @@ async def testfuzzyflower(interaction: discord.Interaction):
         error_details = traceback.format_exc()
 
         await interaction.followup.send(
-            f"❌ Similar-blossom test failed:\n"
+            f"❌ Fuzzy diagnostic failed:\n"
             f"```text\n{error_details[-1800:]}\n```",
             ephemeral=True
         )
