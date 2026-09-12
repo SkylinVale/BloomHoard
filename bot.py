@@ -2200,6 +2200,222 @@ class TaskPlayerReviewView(discord.ui.View):
             )
         )
 
+class TaskImportConfirmView(discord.ui.View):
+
+    def __init__(self, pending_imports):
+        super().__init__(timeout=600)
+
+        self.pending_imports = list(pending_imports)
+        self.finished = False
+
+        confirm_button = discord.ui.Button(
+            label=f"Import {len(self.pending_imports)} Blossoms",
+            emoji="🌸",
+            style=discord.ButtonStyle.success
+        )
+
+        cancel_button = discord.ui.Button(
+            label="Cancel",
+            emoji="❌",
+            style=discord.ButtonStyle.secondary
+        )
+
+        confirm_button.callback = self.confirm_import
+        cancel_button.callback = self.cancel_import
+
+        self.add_item(confirm_button)
+        self.add_item(cancel_button)
+
+    async def confirm_import(
+        self,
+        interaction: discord.Interaction
+    ):
+        if self.finished:
+            await interaction.response.send_message(
+                "⚠️ This import has already been completed or cancelled.",
+                ephemeral=True
+            )
+            return
+
+        self.finished = True
+
+        await interaction.response.defer(ephemeral=True)
+
+        imported = []
+        skipped = []
+        failed = []
+
+        # ---------------------------------------------------------
+        # Re-check every pending blossom immediately before writing.
+        # ---------------------------------------------------------
+
+        for item in self.pending_imports:
+
+            gamename = item["gamename"]
+            blossom = item["blossom"]
+
+            try:
+
+                current_supabase = create_client(
+                    SUPABASE_URL,
+                    SUPABASE_KEY
+                )
+
+                # Make sure the florist still exists.
+                player_rows = (
+                    current_supabase
+                    .table("players")
+                    .select("id")
+                    .eq("gamename", gamename)
+                    .limit(1)
+                    .execute()
+                    .data
+                    or []
+                )
+
+                if not player_rows:
+
+                    failed.append(
+                        f"{gamename} — {blossom} "
+                        f"(florist no longer exists)"
+                    )
+                    continue
+
+                # -------------------------------------------------
+                # Re-check ownership.
+                # -------------------------------------------------
+
+                existing = (
+                    current_supabase
+                    .table("ownership")
+                    .select("id")
+                    .eq("gamename", gamename)
+                    .eq("blossom", blossom)
+                    .limit(1)
+                    .execute()
+                    .data
+                    or []
+                )
+
+                if existing:
+
+                    skipped.append(
+                        f"{gamename} — {blossom} "
+                        f"(already owned)"
+                    )
+                    continue
+
+                # -------------------------------------------------
+                # Insert ownership.
+                #
+                # New imported flowers receive no bonus.
+                # -------------------------------------------------
+
+                current_supabase.table("ownership").insert({
+                    "gamename": gamename,
+                    "blossom": blossom,
+                    "bonus": None
+                }).execute()
+
+                imported.append(
+                    f"{gamename} — {blossom}"
+                )
+
+            except Exception as e:
+
+                print(
+                    "ERROR IMPORTING OWNERSHIP:",
+                    gamename,
+                    blossom,
+                    repr(e)
+                )
+
+                failed.append(
+                    f"{gamename} — {blossom}"
+                )
+
+        # ---------------------------------------------------------
+        # Build final result.
+        # ---------------------------------------------------------
+
+        lines = [
+            "🌸 **Blossom import complete!**"
+        ]
+
+        lines.append("")
+        lines.append(
+            f"✅ Imported: **{len(imported)}**"
+        )
+
+        lines.append(
+            f"⚠️ Skipped: **{len(skipped)}**"
+        )
+
+        lines.append(
+            f"❌ Failed: **{len(failed)}**"
+        )
+
+        if imported:
+
+            lines.append("")
+            lines.append("**Imported:**")
+
+            for item in imported:
+                lines.append(
+                    f"🌸 {item}"
+                )
+
+        if skipped:
+
+            lines.append("")
+            lines.append("**Skipped:**")
+
+            for item in skipped:
+                lines.append(
+                    f"⚠️ {item}"
+                )
+
+        if failed:
+
+            lines.append("")
+            lines.append("**Failed:**")
+
+            for item in failed:
+                lines.append(
+                    f"❌ {item}"
+                )
+
+        # Disable the buttons after completion.
+        for child in self.children:
+            child.disabled = True
+
+        await interaction.followup.send(
+            "\n".join(lines)[:1900],
+            ephemeral=True
+        )
+
+    async def cancel_import(
+        self,
+        interaction: discord.Interaction
+    ):
+        if self.finished:
+            await interaction.response.send_message(
+                "⚠️ This import has already been completed or cancelled.",
+                ephemeral=True
+            )
+            return
+
+        self.finished = True
+
+        for child in self.children:
+            child.disabled = True
+
+        await interaction.response.send_message(
+            "❌ **Import cancelled.**\n\n"
+            "No ownership records were changed.",
+            ephemeral=True
+        )
+
 # ════════════════════════════════════════════════════════════════════════════════
 # PAGINATED VIEW
 # ════════════════════════════════════════════════════════════════════════════════
@@ -4453,7 +4669,7 @@ async def testimportresolve(
 
 @tree.command(
     name="importtasklog",
-    description="Preview blossom imports from a task-log screenshot"
+    description="Preview and import blossoms from a task-log screenshot"
 )
 @app_commands.describe(
     image="Task-log screenshot to preview"
@@ -4527,8 +4743,11 @@ async def importtasklog(
 
         unknown_entries = []
 
-        # Track flowers that appear more than once in this
-        # particular import batch.
+        # These are the actual records that will be inserted if
+        # the staffer presses Confirm Import.
+        pending_imports = []
+
+        # Prevent duplicate flowers within this upload.
         pending_keys = set()
 
         new_count = 0
@@ -4597,6 +4816,8 @@ async def importtasklog(
             # Blossom resolution
             # -----------------------------------------------------
 
+            canonical_blossom = None
+
             if blossom_result:
 
                 confidence = blossom_result.get(
@@ -4636,8 +4857,6 @@ async def importtasklog(
 
             else:
 
-                canonical_blossom = None
-
                 lines.append(
                     f"🌸 `{entry.get('task_text')}` "
                     f"→ ❓ **BLOSSOM NEEDS REVIEW**"
@@ -4669,6 +4888,7 @@ async def importtasklog(
                         "CURRENT FLORIST NAME NOT FOUND**"
                     )
 
+                    review_count += 1
                     continue
 
                 lines.append(
@@ -4682,7 +4902,7 @@ async def importtasklog(
                 )
 
                 # -------------------------------------------------
-                # Duplicate within this import batch
+                # Duplicate within this upload
                 # -------------------------------------------------
 
                 if import_key in pending_keys:
@@ -4698,7 +4918,7 @@ async def importtasklog(
                 pending_keys.add(import_key)
 
                 # -------------------------------------------------
-                # Already owned in Supabase
+                # Check existing ownership
                 # -------------------------------------------------
 
                 owned_blossoms = load_owned_blossoms(
@@ -4723,6 +4943,11 @@ async def importtasklog(
 
                     new_count += 1
 
+                    pending_imports.append({
+                        "gamename": current_gamename,
+                        "blossom": canonical_blossom,
+                    })
+
             else:
 
                 lines.append(
@@ -4737,17 +4962,22 @@ async def importtasklog(
         lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━")
         lines.append("📋 **Import preview summary**")
+
         lines.append(
             f"🌸 New blossoms: **{new_count}**"
         )
+
         lines.append(
             f"⚠️ Already owned: **{owned_count}**"
         )
+
         lines.append(
             f"🔁 Duplicates in this import: **{duplicate_count}**"
         )
+
         lines.append(
-            f"🔍 Needs review: **{review_count + len(unknown_entries)}**"
+            f"🔍 Needs review: "
+            f"**{review_count + len(unknown_entries)}**"
         )
 
         lines.append("")
@@ -4758,7 +4988,7 @@ async def importtasklog(
         )
 
         # ---------------------------------------------------------
-        # Player review UI
+        # Review status
         # ---------------------------------------------------------
 
         if unknown_entries:
@@ -4768,47 +4998,86 @@ async def importtasklog(
                 "🔍 **One or more players need identification.**"
             )
 
+        elif review_count:
+
+            lines.append("")
+            lines.append(
+                "🔍 **One or more entries need review.**"
+            )
+
         else:
 
             lines.append("")
             lines.append(
-                "✅ **All players resolved.**"
+                "✅ **All entries are ready for review.**"
             )
 
         # ---------------------------------------------------------
-        # SAFETY: preview only
-        # ---------------------------------------------------------
-
-        lines.append("")
-        lines.append(
-            "🔒 **PREVIEW ONLY — no ownership records were changed.**"
-        )
-
-        output = "\n".join(lines)
-
-        # ---------------------------------------------------------
-        # Send preview
+        # Build the appropriate UI
         # ---------------------------------------------------------
 
         if unknown_entries:
 
+            lines.append("")
+            lines.append(
+                "Use **Identify Player** to resolve the "
+                "unrecognized players, then rerun "
+                "`/importtasklog`."
+            )
+
             view = TaskPlayerReviewView(
                 player_aliases,
                 unknown_entries,
-                output,
+                "\n".join(lines),
                 resume_command="importtasklog"
             )
 
             await interaction.followup.send(
-                output[:1900],
+                "\n".join(lines)[:1900],
+                ephemeral=True,
+                view=view
+            )
+
+        elif review_count:
+
+            lines.append("")
+            lines.append(
+                "⚠️ **Import cannot proceed until all "
+                "entries are resolved.**"
+            )
+
+            await interaction.followup.send(
+                "\n".join(lines)[:1900],
+                ephemeral=True
+            )
+
+        elif pending_imports:
+
+            lines.append("")
+            lines.append(
+                "⚠️ **Nothing will be imported until you "
+                "explicitly confirm below.**"
+            )
+
+            view = TaskImportConfirmView(
+                pending_imports
+            )
+
+            await interaction.followup.send(
+                "\n".join(lines)[:1900],
                 ephemeral=True,
                 view=view
             )
 
         else:
 
+            lines.append("")
+            lines.append(
+                "ℹ️ **There are no new blossoms to import.**"
+            )
+
             await interaction.followup.send(
-                output[:1900],
+                "\n".join(lines)[:1900],
                 ephemeral=True
             )
 
@@ -4837,6 +5106,7 @@ async def importtasklog(
         # ---------------------------------------------------------
 
         try:
+
             if os.path.exists(image_path):
                 os.remove(image_path)
 
