@@ -3628,6 +3628,84 @@ async def testblossomresolve(
         if os.path.exists(crop_path):
             os.remove(crop_path)
 
+@tree.command(
+    name="testfuzzyflower",
+    description="Test fuzzy blossom matching"
+)
+async def testfuzzyflower(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        blossom_names = load_blossom_names()
+
+        # Deliberately imperfect versions of real blossom names.
+        tests = [
+            "Peach Blossom Jacquely",
+            "Taro Purpel Gladiolus",
+            "Peach Cream Dahlia!",
+            "Light Purple Alliu",
+            "Completely Made Up Flower",
+        ]
+
+        lines = [
+            "🧪 **Fuzzy blossom test:**"
+        ]
+
+        for test_text in tests:
+
+            result = resolve_blossom(
+                test_text,
+                blossom_names
+            )
+
+            if not result:
+                lines.append(
+                    f"❌ `{test_text}` → no blossom data"
+                )
+                continue
+
+            if result["blossom"] is None:
+                lines.append(
+                    f"❓ `{test_text}` → unresolved "
+                    f"({result['score']:.0%})"
+                )
+                continue
+
+            review_marker = (
+                " ⚠️ REVIEW"
+                if result["needs_review"]
+                else ""
+            )
+
+            lines.append(
+                f"🔎 `{test_text}` → "
+                f"**{result['blossom']}** "
+                f"({result['score']:.0%})"
+                f"{review_marker}"
+            )
+
+        lines.append("")
+        lines.append(
+            f"Loaded **{len(blossom_names)}** "
+            f"canonical blossoms."
+        )
+
+        await interaction.followup.send(
+            "\n".join(lines)[:1900],
+            ephemeral=True
+        )
+
+    except Exception:
+        import traceback
+
+        error_details = traceback.format_exc()
+
+        await interaction.followup.send(
+            f"❌ Fuzzy blossom test failed:\n"
+            f"```text\n{error_details[-1800:]}\n```",
+            ephemeral=True
+        )
+
 # ════════════════════════════════════════════════════════════════════════════════
 # RUN
 # ════════════════════════════════════════════════════════════════════════════════
