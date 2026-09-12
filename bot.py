@@ -3687,7 +3687,19 @@ async def testimportresolve(
         # -----------------------------------------------------
 
         player_aliases = load_player_aliases()
-        blossom_names = load_blossom_names()
+        blossom_names = [
+            row["name"]
+            for row in (
+                supabase
+                .table("blossoms")
+                .select("name")
+                .limit(10)
+                .execute()
+                .data
+                or []
+            )
+            if row.get("name")
+        ]
 
         # -----------------------------------------------------
         # STEP 4: RESOLVE EACH PARSED ENTRY
