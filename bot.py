@@ -3699,7 +3699,28 @@ async def testimportresolve(
             )
             if row.get("name")
         ]
-        player_aliases = load_player_aliases()
+        
+        # Use a fresh Supabase client for the second request.
+        # This is a diagnostic to determine whether the shared
+        # HTTP session is causing the connection termination.
+        test_supabase = create_client(
+            SUPABASE_URL,
+            SUPABASE_KEY
+        )
+
+        player_aliases = [
+            row
+            for row in (
+                test_supabase
+                .table("player_aliases")
+                .select(
+                    "player_id, game_name, server_number"
+                )
+                .execute()
+                .data
+                or []
+            )
+        ]
         
         # -----------------------------------------------------
         # STEP 4: RESOLVE EACH PARSED ENTRY
