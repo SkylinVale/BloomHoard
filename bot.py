@@ -4337,44 +4337,19 @@ async def testimportresolve(
 
         output = "\n".join(lines)
 
-        # -----------------------------------------------------
-        # PLAYER REVIEW UI
-        # -----------------------------------------------------
-
-        view = None
-
         if unknown_entries:
-            view = TaskPlayerReviewView(
-                player_aliases,
-                unknown_entries,
-                output
+            view = TaskPlayerReviewView(player_aliases, unknown_entries, output)
+
+            await interaction.followup.send(
+                output[:1900],
+                ephemeral=True,
+                view=view
             )
-
-        await interaction.followup.send(
-            output[:1900],
-            ephemeral=True,
-            view=view
-        )
-
-    except Exception:
-        import traceback
-
-        error_details = traceback.format_exc()
-
-        await interaction.followup.send(
-            f"❌ Import resolution test failed:\n"
-            f"```text\n{error_details[-1800:]}\n```",
-            ephemeral=True
-        )
-
-    finally:
-        if os.path.exists(image_path):
-            os.remove(image_path)
-
-        crop_path = "/tmp/blossomhoard_tasklog_crop.png"
-
-        if os.path.exists(crop_path):
-            os.remove(crop_path)
+        else:
+            await interaction.followup.send(
+                output[:1900],
+                ephemeral=True
+            )
 
 # ════════════════════════════════════════════════════════════════════════════════
 # RUN
