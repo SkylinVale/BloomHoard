@@ -3630,7 +3630,7 @@ async def testblossomresolve(
 
 @tree.command(
     name="testfuzzyflower",
-    description="Test fuzzy blossom matching"
+    description="Test fuzzy blossom matching with similar names"
 )
 async def testfuzzyflower(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
@@ -3638,17 +3638,21 @@ async def testfuzzyflower(interaction: discord.Interaction):
     try:
         blossom_names = load_blossom_names()
 
-        # Deliberately imperfect versions of real blossom names.
+        # Deliberately damaged names, including flowers with
+        # similar names in the database.
         tests = [
-            "Peach Blossom Jacquely",
-            "Taro Purpel Gladiolus",
-            "Peach Cream Dahlia!",
-            "Light Purple Alliu",
-            "Completely Made Up Flower",
+            "Pink Astilb",
+            "Pale Pink Astilb",
+            "Pink Petuni",
+            "Pale Pink Petuni",
+            "Light Pink Ping Pong Chrys",
+            "Pale White Ping Pong Chrys",
+            "Golden Hollyhock",
+            "Pale Madder Hollyhoc",
         ]
 
         lines = [
-            "🧪 **Fuzzy blossom test:**"
+            "🧪 **Similar-blossom fuzzy test:**"
         ]
 
         for test_text in tests:
@@ -3701,7 +3705,7 @@ async def testfuzzyflower(interaction: discord.Interaction):
         error_details = traceback.format_exc()
 
         await interaction.followup.send(
-            f"❌ Fuzzy blossom test failed:\n"
+            f"❌ Similar-blossom test failed:\n"
             f"```text\n{error_details[-1800:]}\n```",
             ephemeral=True
         )
