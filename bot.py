@@ -3629,84 +3629,229 @@ async def testblossomresolve(
             os.remove(crop_path)
 
 @tree.command(
-    name="testfuzzyflower",
-    description="Test fuzzy blossom matching"
+    name="testimportresolve",
+    description="Test complete task-log import resolution"
 )
-async def testfuzzyflower(interaction: discord.Interaction):
+@app_commands.describe(
+    image="Upload a task-log screenshot"
+)
+async def testimportresolve(
+    interaction: discord.Interaction,
+    image: discord.Attachment
+):
     await interaction.response.defer(ephemeral=True)
 
-    try:
-        from difflib import SequenceMatcher
+    image_path = f"/tmp/{image.filename}"
 
+    try:
+        from PIL import Image
+
+        await image.save(image_path)
+
+        img = Image.open(image_path)
+
+        # Same task-log crop used by /testtaskparse.
+        w, h = img.size
+        crop = img.crop((
+            int(w * 0.27),
+            int(h * 0.32),
+            int(w * 0.93),
+            int(h * 0.91)
+        ))
+
+        crop_path = "/tmp/blossomhoard_tasklog_crop.png"
+        crop.save(crop_path)
+
+        # -----------------------------------------------------
+        # STEP 1: OCR
+        # -----------------------------------------------------
+
+        ocr_text = await ocr_image(crop_path)
+
+        # -----------------------------------------------------
+        # STEP 2: EXISTING FROZEN PARSER
+        # -----------------------------------------------------
+
+        entries = parse_task_logs(ocr_text)
+
+        if not entries:
+            await interaction.followup.send(
+                "❌ OCR worked, but no flower task entries "
+                "were detected.",
+                ephemeral=True
+            )
+            return
+
+        # -----------------------------------------------------
+        # STEP 3: LOAD REFERENCE DATA ONCE
+        # -----------------------------------------------------
+
+        player_aliases = load_player_aliases()
         blossom_names = load_blossom_names()
 
-        tests = [
-            "Pink Astilb",
-            "Pale Pink Astilb",
-            "Pink Petuni",
-            "Pale Pink Petuni",
-            "Light Pink Ping Pong Chrys",
-            "Pale White Ping Pong Chrys",
-            "Golden Hollyhock",
-            "Pale Madder Hollyhoc",
-        ]
+        # -----------------------------------------------------
+        # STEP 4: RESOLVE EACH PARSED ENTRY
+        # -----------------------------------------------------
 
         lines = [
-            "🧪 **Similar-blossom diagnostic:**"
+            "🌸 **Import resolution test:**"
         ]
 
-        for test_text in tests:
+        for entry in entries:
 
-            normalized_input = normalize_blossom_name(
-                test_text
+            server_number = entry.get(
+                "server_number"
             )
 
-            scored = []
-
-            for name in blossom_names:
-
-                normalized_candidate = normalize_blossom_name(
-                    name
-                )
-
-                if not normalized_candidate:
-                    continue
-
-                score = SequenceMatcher(
-                    None,
-                    normalized_input,
-                    normalized_candidate,
-                ).ratio()
-
-                scored.append(
-                    (score, name)
-                )
-
-            scored.sort(
-                key=lambda item: item[0],
-                reverse=True
+            # The parser may preserve the raw OCR player
+            # separately from game_name.
+            #
+            # For normal recognized players:
+            #     game_name = "Lily"
+            #     ocr_player = "Lily"
+            #
+            # For an unknown player:
+            #     game_name = "<unknown player>"
+            #     ocr_player = "CrystalAce"
+            #
+            lookup_name = (
+                entry.get("ocr_player")
+                or entry.get("game_name")
             )
 
-            top_matches = scored[:3]
+            # -------------------------------------------------
+            # PLAYER RESOLUTION
+            # -------------------------------------------------
+
+            player_result = resolve_player_alias(
+                lookup_name,
+                server_number,
+                player_aliases
+            )
+
+            # -------------------------------------------------
+            # BLOSSOM RESOLUTION
+            # -------------------------------------------------
+
+            blossom_result = resolve_blossom(
+                entry.get("task_text"),
+                blossom_names
+            )
+
+            # -------------------------------------------------
+            # BUILD DISPLAY
+            # -------------------------------------------------
 
             lines.append("")
-            lines.append(
-                f"**`{test_text}`**"
+
+            action = entry.get(
+                "action",
+                "unknown"
             )
 
-            for index, (score, name) in enumerate(
-                top_matches,
-                start=1
+            task_number = entry.get(
+                "task_number"
+            )
+
+            task_text = entry.get(
+                "task_text",
+                ""
+            )
+
+            lines.append(
+                f"**Task {task_number} — {action}**"
+            )
+
+            # -------------------------------------------------
+            # PLAYER RESULT
+            # -------------------------------------------------
+
+            if player_result:
+
+                if player_result["match_type"] == "exact":
+                    player_label = "exact"
+                else:
+                    player_label = "alias"
+
+                lines.append(
+                    f"👤 `{lookup_name}` / s{server_number} "
+                    f"→ **{player_result['game_name']}** "
+                    f"(player_id "
+                    f"`{player_result['player_id']}`, "
+                    f"{player_label})"
+                )
+
+            else:
+
+                lines.append(
+                    f"👤 `{lookup_name}` / s{server_number} "
+                    f"→ ❓ **PLAYER NEEDS REVIEW**"
+                )
+
+            # -------------------------------------------------
+            # BLOSSOM RESULT
+            # -------------------------------------------------
+
+            if not blossom_result:
+
+                lines.append(
+                    f"🌸 `{task_text}` "
+                    f"→ ❌ no blossom data"
+                )
+
+            elif blossom_result["blossom"] is None:
+
+                lines.append(
+                    f"🌸 `{task_text}` "
+                    f"→ ❓ **BLOSSOM NEEDS REVIEW** "
+                    f"({blossom_result['score']:.0%})"
+                )
+
+            else:
+
+                review_marker = (
+                    " ⚠️ REVIEW"
+                    if blossom_result["needs_review"]
+                    else ""
+                )
+
+                lines.append(
+                    f"🌸 `{task_text}` "
+                    f"→ **{blossom_result['blossom']}** "
+                    f"({blossom_result['score']:.0%}, "
+                    f"{blossom_result['match_type']})"
+                    f"{review_marker}"
+                )
+
+            # -------------------------------------------------
+            # IMPORT STATUS
+            # -------------------------------------------------
+
+            if (
+                player_result
+                and blossom_result
+                and blossom_result["blossom"]
+                and not blossom_result["needs_review"]
             ):
                 lines.append(
-                    f"{index}. {name} — "
-                    f"{score:.0%}"
+                    "➡️ **READY TO IMPORT**"
+                )
+
+            else:
+                lines.append(
+                    "➡️ 🚧 **NOT READY — NEEDS REVIEW**"
                 )
 
         lines.append("")
         lines.append(
-            f"Loaded **{len(blossom_names)}** "
-            f"canonical blossoms."
+            f"Reference data: "
+            f"**{len(player_aliases)}** player aliases, "
+            f"**{len(blossom_names)}** blossoms."
+        )
+
+        lines.append("")
+        lines.append(
+            "🔒 **TEST ONLY — no database records were changed.**"
         )
 
         await interaction.followup.send(
@@ -3720,10 +3865,19 @@ async def testfuzzyflower(interaction: discord.Interaction):
         error_details = traceback.format_exc()
 
         await interaction.followup.send(
-            f"❌ Fuzzy diagnostic failed:\n"
+            f"❌ Import resolution test failed:\n"
             f"```text\n{error_details[-1800:]}\n```",
             ephemeral=True
         )
+
+    finally:
+        if os.path.exists(image_path):
+            os.remove(image_path)
+
+        crop_path = "/tmp/blossomhoard_tasklog_crop.png"
+
+        if os.path.exists(crop_path):
+            os.remove(crop_path)
 
 # ════════════════════════════════════════════════════════════════════════════════
 # RUN
