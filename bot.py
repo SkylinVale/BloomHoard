@@ -3685,8 +3685,7 @@ async def testimportresolve(
         # -----------------------------------------------------
         # STEP 3: LOAD REFERENCE DATA ONCE
         # -----------------------------------------------------
-
-        player_aliases = load_player_aliases()
+       
         blossom_names = [
             row["name"]
             for row in (
@@ -3700,7 +3699,8 @@ async def testimportresolve(
             )
             if row.get("name")
         ]
-
+        player_aliases = load_player_aliases()
+        
         # -----------------------------------------------------
         # STEP 4: RESOLVE EACH PARSED ENTRY
         # -----------------------------------------------------
