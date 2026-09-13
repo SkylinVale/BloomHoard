@@ -210,47 +210,6 @@ async def ocr_image(image_path: str) -> str:
 
     return result.strip()
 
-async def ocr_image_data(image_path: str) -> list[dict]:
-    """Run OCR and return recognized words with position and confidence."""
-    from PIL import Image
-    import pytesseract
-
-    image = Image.open(image_path)
-
-    data = pytesseract.image_to_data(
-        image,
-        config="--psm 6",
-        output_type=pytesseract.Output.DICT,
-    )
-
-    results = []
-
-    for i, text in enumerate(data["text"]):
-        text = text.strip()
-
-        if not text:
-            continue
-
-        try:
-            confidence = float(data["conf"][i])
-        except (ValueError, TypeError):
-            confidence = -1
-
-        results.append({
-            "text": text,
-            "confidence": confidence,
-            "x": data["left"][i],
-            "y": data["top"][i],
-            "width": data["width"][i],
-            "height": data["height"][i],
-            "block_num": data["block_num"][i],
-            "par_num": data["par_num"][i],
-            "line_num": data["line_num"][i],
-            "word_num": data["word_num"][i],
-        })
-
-    return results
-
 def parse_game_identity(text: str):
     """
     Extract (server_number, game_name) pairs from OCR text.
@@ -1756,10 +1715,6 @@ def resolve_blossom(blossom_text, blossom_names=None):
         "match_type": "fuzzy",
         "needs_review": needs_review,
     }
-
-# ════════════════════════════════════════════════════════════════════════════════
-# TASK-LOG PLAYER REVIEW
-# ════════════════════════════════════════════════════════════════════════════════
 
 # ════════════════════════════════════════════════════════════════════════════════
 # TASK-LOG PLAYER REVIEW
