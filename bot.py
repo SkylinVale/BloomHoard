@@ -1914,7 +1914,7 @@ class TaskBlossomSearchModal(discord.ui.Modal):
         )
 
         self.flower_name = discord.ui.TextInput(
-            label="Flower needing review",
+            label=f"Flower needing review: {lookup_name}"[:45],
             placeholder=(
                 "Enter part of the flower name"
             ),
