@@ -1212,36 +1212,6 @@ def parse_task_logs(
 
     return unique_entries
 
-async def resolve_game_identity(server_number: int, game_name: str):
-    game_name = game_name.strip()
-
-    link = (
-        supabase.table("player_aliases")
-        .select("player_id")
-        .eq("server_number", server_number)
-        .eq("game_name", game_name)
-        .execute()
-        .data
-    )
-
-    if not link:
-        return None
-
-    player_id = link[0]["player_id"]
-
-    player = (
-        supabase.table("players")
-        .select("gamename")
-        .eq("id", player_id)
-        .execute()
-        .data
-    )
-
-    if not player:
-        return None
-
-    return player[0]["gamename"]
-
 # ════════════════════════════════════════════════════════════════════════════════
 # PLAYER ALIAS / IDENTITY HELPERS
 # ════════════════════════════════════════════════════════════════════════════════
