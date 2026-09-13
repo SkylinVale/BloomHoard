@@ -210,47 +210,6 @@ async def ocr_image(image_path: str) -> str:
 
     return result.strip()
 
-def parse_game_identity(text: str):
-    """
-    Extract (server_number, game_name) pairs from OCR text.
-
-    Supports:
-    - s5.Miraea
-    - s102.DittoWasHere
-    - s5
-      Miraea
-    """
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    identities = []
-
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-
-        # Format: s5.Miraea
-        match = re.fullmatch(r"s(\d+)\.(.+)", line, re.IGNORECASE)
-        if match:
-            identities.append((int(match.group(1)), match.group(2).strip()))
-            i += 1
-            continue
-
-        # Format:
-        # s5
-        # Miraea
-        match = re.fullmatch(r"s(\d+)", line, re.IGNORECASE)
-        if match and i + 1 < len(lines):
-            next_line = lines[i + 1].strip()
-
-            # Don't accept another server line as the name
-            if not re.fullmatch(r"s\d+", next_line, re.IGNORECASE):
-                identities.append((int(match.group(1)), next_line))
-                i += 2
-                continue
-
-        i += 1
-
-    return identities
-
 def parse_task_logs(
     text: str,
     player_aliases: dict | None = None,
