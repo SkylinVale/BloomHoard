@@ -1471,67 +1471,6 @@ def resolve_player_alias(game_name, server_number=None, aliases=None):
         "match_type": match_type,
     }
 
-
-def save_player_alias(player_id, game_name, server_number=None):
-    """
-    Save a newly discovered player game name/OCR alias.
-
-    Returns:
-        "created"             - a new alias was saved
-        "already_same_player" - this exact identity already belongs to this player
-        "conflict"            - this exact identity belongs to a different player
-    """
-    if not game_name:
-        return None
-
-    cleaned_name = " ".join(str(game_name).strip().split())
-
-    alias_supabase = create_client(
-        SUPABASE_URL,
-        SUPABASE_KEY
-    )
-
-    # Check whether this exact game name/server identity already exists,
-    # regardless of which player it currently belongs to.
-    query = (
-        alias_supabase
-        .table("player_aliases")
-        .select("id, player_id, game_name, server_number")
-        .eq("game_name", cleaned_name)
-    )
-
-    if server_number is None:
-        query = query.is_("server_number", "null")
-    else:
-        query = query.eq("server_number", server_number)
-
-    existing = query.limit(1).execute().data or []
-
-    if existing:
-        existing_player_id = existing[0]["player_id"]
-
-        if existing_player_id == player_id:
-            return "already_same_player"
-
-        return "conflict"
-
-    # No existing identity was found, so create the alias.
-    result = (
-        alias_supabase
-        .table("player_aliases")
-        .insert({
-            "player_id": player_id,
-            "game_name": cleaned_name,
-            "server_number": server_number,
-        })
-        .execute()
-    )
-
-    if result.data:
-        return "created"
-
-    return None
-
 # ════════════════════════════════════════════════════════════════════════════════
 # PLAYER / OWNERSHIP HELPERS
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1847,52 +1786,6 @@ def load_current_players():
         .data
         or []
     )
-
-
-def save_player_alias(
-    player_id,
-    game_name,
-    server_number
-):
-    """
-    Save an OCR-discovered game identity as an alias.
-
-    If the exact game_name/server combination already exists,
-    do not create a duplicate.
-    """
-
-    alias_supabase = create_client(
-        SUPABASE_URL,
-        SUPABASE_KEY
-    )
-
-    existing = (
-        alias_supabase
-        .table("player_aliases")
-        .select("id, player_id")
-        .eq("game_name", game_name)
-        .eq("server_number", server_number)
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-
-    if existing:
-        return False
-
-    (
-        alias_supabase
-        .table("player_aliases")
-        .insert({
-            "player_id": player_id,
-            "game_name": game_name,
-            "server_number": server_number
-        })
-        .execute()
-    )
-
-    return True
 
 class TaskBlossomSearchModal(discord.ui.Modal):
 
