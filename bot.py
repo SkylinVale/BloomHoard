@@ -4751,7 +4751,7 @@ async def testimportresolve(
 
                         lines.append(
                             "➡️ ⚠️ **ALREADY OWNED — "
-                            "WOULD SKIP**"
+                            "SKIP**"
                         )
 
                     else:
@@ -5025,11 +5025,8 @@ async def run_importtasklog(
                 blossom_names
             )
 
-            lines.append("")
-            lines.append(
-                f"**Task {entry.get('task_number')} — "
-                f"{entry.get('action')}**"
-            )
+            task_number = entry.get("task_number")
+            action = entry.get("action")
 
             # -----------------------------------------------------
             # Player resolution
@@ -5042,14 +5039,16 @@ async def run_importtasklog(
                     "unknown"
                 )
 
-                lines.append(
-                    f"👤 `{lookup_name}` / s{server_number} "
-                    f"→ **{player_result['game_name']}** "
-                    f"(player_id {player_result['player_id']}, "
-                    f"{player_match_type})"
-                )
+                resolved_player_name = player_result["game_name"]
 
             else:
+
+                resolved_player_name = None
+
+                lines.append("")
+                lines.append(
+                    f"**Task {task_number} — {action}**"
+                )
 
                 lines.append(
                     f"👤 `{lookup_name}` / s{server_number} "
@@ -5085,14 +5084,43 @@ async def run_importtasklog(
 
                 if canonical_blossom:
 
-                    lines.append(
-                        f"🌸 `{entry.get('task_text')}` "
-                        f"→ **{canonical_blossom}** "
-                        f"({confidence:.0%}, "
-                        f"{blossom_match_type})"
-                    )
+                    # -------------------------------------------------
+                    # If player is unresolved, still show the blossom
+                    # so the staffer can see the complete problem.
+                    # -------------------------------------------------
+
+                    if not player_result:
+
+                        lines.append(
+                            f"🌸 `{entry.get('task_text')}` "
+                            f"→ **{canonical_blossom}** "
+                            f"({confidence:.0%}, "
+                            f"{blossom_match_type})"
+                        )
+
+                    # -------------------------------------------------
+                    # Resolved player + resolved blossom.
+                    # We will decide below whether this is new,
+                    # already owned, or a duplicate.
+                    # -------------------------------------------------
 
                 else:
+
+                    lines.append("")
+
+                    if player_result:
+
+                        lines.append(
+                            f"**Task {task_number} — {action}**"
+                        )
+
+                        lines.append(
+                            f"👤 `{lookup_name}` / s{server_number} "
+                            f"→ **{resolved_player_name}** "
+                            f"(player_id "
+                            f"{player_result['player_id']}, "
+                            f"{player_match_type})"
+                        )
 
                     lines.append(
                         f"🌸 `{entry.get('task_text')}` "
@@ -5103,6 +5131,22 @@ async def run_importtasklog(
 
             else:
 
+                lines.append("")
+
+                if player_result:
+
+                    lines.append(
+                        f"**Task {task_number} — {action}**"
+                    )
+
+                    lines.append(
+                        f"👤 `{lookup_name}` / s{server_number} "
+                        f"→ **{resolved_player_name}** "
+                        f"(player_id "
+                        f"{player_result['player_id']}, "
+                        f"{player_match_type})"
+                    )
+
                 lines.append(
                     f"🌸 `{entry.get('task_text')}` "
                     f"→ ❓ **BLOSSOM NEEDS REVIEW**"
@@ -5111,95 +5155,177 @@ async def run_importtasklog(
                 review_count += 1
 
             # -----------------------------------------------------
-            # Ownership preview
+            # If either player or blossom needs review, finish this
+            # entry here.
             # -----------------------------------------------------
 
             if (
-                player_result
-                and blossom_result
-                and canonical_blossom
-                and not blossom_result.get("needs_review")
+                not player_result
+                or not canonical_blossom
+                or (
+                    blossom_result
+                    and blossom_result.get("needs_review")
+                )
             ):
 
-                player_id = player_result["player_id"]
-
-                current_gamename = get_current_player_gamename(
-                    player_id
+                lines.append(
+                    "➡️ 🚧 **NOT READY — "
+                    "NEEDS REVIEW**"
                 )
 
-                if not current_gamename:
+                continue
 
-                    lines.append(
-                        "➡️ ❌ **NOT READY — "
-                        "CURRENT FLORIST NAME NOT FOUND**"
-                    )
+            # -----------------------------------------------------
+            # Ownership preview
+            # -----------------------------------------------------
 
-                    review_count += 1
-                    continue
+            player_id = player_result["player_id"]
+
+            current_gamename = get_current_player_gamename(
+                player_id
+            )
+
+            if not current_gamename:
+
+                lines.append("")
+
+                lines.append(
+                    f"**Task {task_number} — {action}**"
+                )
+
+                lines.append(
+                    f"👤 `{lookup_name}` / s{server_number} "
+                    f"→ **{resolved_player_name}** "
+                    f"(player_id "
+                    f"{player_result['player_id']}, "
+                    f"{player_match_type})"
+                )
+
+                lines.append(
+                    f"🌸 `{entry.get('task_text')}` "
+                    f"→ **{canonical_blossom}**"
+                )
+
+                lines.append(
+                    "➡️ ❌ **NOT READY — "
+                    "CURRENT FLORIST NAME NOT FOUND**"
+                )
+
+                review_count += 1
+                continue
+
+            import_key = (
+                current_gamename,
+                canonical_blossom
+            )
+
+            # -----------------------------------------------------
+            # Check duplicate within this upload BEFORE printing
+            # the full resolution block.
+            # -----------------------------------------------------
+
+            if import_key in pending_keys:
+
+                lines.append("")
+                lines.append(
+                    f"**Task {task_number} — {action} "
+                    f"— {current_gamename}**"
+                )
+
+                lines.append(
+                    f"🌸 {entry.get('task_text')}"
+                )
+
+                lines.append(
+                    "➡️ 🔁 **DUPLICATE — SKIP**"
+                )
+
+                duplicate_count += 1
+                continue
+
+            pending_keys.add(import_key)
+
+            # -----------------------------------------------------
+            # Check existing ownership.
+            # -----------------------------------------------------
+
+            owned_blossoms = load_owned_blossoms(
+                current_gamename
+            )
+
+            if canonical_blossom in owned_blossoms:
+
+                lines.append("")
+                lines.append(
+                    f"**Task {task_number} — {action} "
+                    f"— {current_gamename}**"
+                )
+
+                lines.append(
+                    f"🌸 {entry.get('task_text')}"
+                )
+
+                lines.append(
+                    "➡️ ⚠️ **ALREADY OWNED — SKIP**"
+                )
+
+                owned_count += 1
+
+            else:
+
+                # -------------------------------------------------
+                # New entry — keep the detailed resolution output.
+                # -------------------------------------------------
+
+                lines.append("")
+                lines.append(
+                    f"**Task {task_number} — {action}**"
+                )
+
+                lines.append(
+                    f"👤 `{lookup_name}` / s{server_number} "
+                    f"→ **{resolved_player_name}** "
+                    f"(player_id "
+                    f"{player_result['player_id']}, "
+                    f"{player_match_type})"
+                )
+
+                confidence = blossom_result.get(
+                    "confidence",
+                    0
+                )
+
+                blossom_match_type = blossom_result.get(
+                    "match_type",
+                    "unknown"
+                )
+
+                if blossom_match_type == "exact":
+                    confidence = 1.0
+
+                lines.append(
+                    f"🌸 `{entry.get('task_text')}` "
+                    f"→ **{canonical_blossom}** "
+                    f"({confidence:.0%}, "
+                    f"{blossom_match_type})"
+                )
 
                 lines.append(
                     f"🏷️ Current florist name: "
                     f"**{current_gamename}**"
                 )
 
-                import_key = (
-                    current_gamename,
-                    canonical_blossom
-                )
-
-                # -------------------------------------------------
-                # Duplicate within this upload
-                # -------------------------------------------------
-
-                if import_key in pending_keys:
-
-                    lines.append(
-                        "➡️ 🔁 **DUPLICATE IN THIS IMPORT — "
-                        "WOULD SKIP**"
-                    )
-
-                    duplicate_count += 1
-                    continue
-
-                pending_keys.add(import_key)
-
-                # -------------------------------------------------
-                # Check existing ownership
-                # -------------------------------------------------
-
-                owned_blossoms = load_owned_blossoms(
-                    current_gamename
-                )
-
-                if canonical_blossom in owned_blossoms:
-
-                    lines.append(
-                        "➡️ ⚠️ **ALREADY OWNED — "
-                        "WOULD SKIP**"
-                    )
-
-                    owned_count += 1
-
-                else:
-
-                    lines.append(
-                        "➡️ 🌸 **NEW — "
-                        "READY TO IMPORT**"
-                    )
-
-                    new_count += 1
-
-                    pending_imports.append({
-                        "gamename": current_gamename,
-                        "blossom": canonical_blossom,
-                    })
-
-            else:
-
                 lines.append(
-                    "➡️ 🚧 **NOT READY — "
-                    "NEEDS REVIEW**"
+                    "➡️ 🌸 **NEW — "
+                    "READY TO IMPORT**"
                 )
+
+                new_count += 1
+
+                pending_imports.append({
+                    "gamename": current_gamename,
+                    "blossom": canonical_blossom,
+                })
 
         # ---------------------------------------------------------
         # Summary
