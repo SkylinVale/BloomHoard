@@ -5358,11 +5358,48 @@ async def run_importtasklog(
                 if canonical_blossom:
 
                     # -------------------------------------------------
+                    # If the fuzzy match is uncertain, send this flower
+                    # to the manual flower picker.
+                    # -------------------------------------------------
+
+                    if blossom_result.get("needs_review"):
+
+                        lines.append("")
+
+                        if player_result:
+
+                            lines.append(
+                                f"**Task {task_number} — {action}**"
+                            )
+
+                            lines.append(
+                                f"👤 `{lookup_name}` / s{server_number} "
+                                f"→ **{resolved_player_name}** "
+                                f"(player_id "
+                                f"{player_result['player_id']}, "
+                                f"{player_match_type})"
+                            )
+
+                        lines.append(
+                            f"🌸 `{entry.get('task_text')}` "
+                            f"→ **{canonical_blossom}** "
+                            f"({confidence:.0%}, "
+                            f"{blossom_match_type})"
+                        )
+
+                        unknown_blossom_entries.append(
+                            entry
+                        )
+
+                        review_count += 1
+
+                    # -------------------------------------------------
+                    # Exact/confident flower match.
                     # If player is unresolved, still show the blossom
                     # so the staffer can see the complete problem.
                     # -------------------------------------------------
 
-                    if not player_result:
+                    elif not player_result:
 
                         lines.append(
                             f"🌸 `{entry.get('task_text')}` "
