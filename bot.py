@@ -1894,6 +1894,230 @@ def save_player_alias(
 
     return True
 
+class TaskBlossomSearchModal(discord.ui.Modal):
+
+    def __init__(
+        self,
+        review_view,
+        unknown_entry
+    ):
+        super().__init__(
+            title="Identify Flower"
+        )
+
+        self.review_view = review_view
+        self.unknown_entry = unknown_entry
+
+        lookup_name = (
+            unknown_entry.get("task_text")
+            or "Unknown flower"
+        )
+
+        self.flower_name = discord.ui.TextInput(
+            label="Flower needing review",
+            placeholder=(
+                "Enter part of the flower name"
+            ),
+            required=True,
+            max_length=100
+        )
+
+        self.add_item(
+            self.flower_name
+        )
+
+    async def on_submit(
+        self,
+        interaction: discord.Interaction
+    ):
+        search_text = str(
+            self.flower_name.value
+        ).strip().lower()
+
+        if not search_text:
+            await interaction.response.send_message(
+                "❌ Please enter a flower name or part of a flower name.",
+                ephemeral=True
+            )
+            return
+
+        matches = [
+            blossom
+            for blossom in self.review_view.blossom_names
+            if search_text in blossom.lower()
+        ]
+
+        if not matches:
+            await interaction.response.send_message(
+                f"❌ No flowers found matching "
+                f"`{self.flower_name.value}`.\n\n"
+                "Try entering a different part of the flower's name.",
+                ephemeral=True
+            )
+            return
+
+        if len(matches) > 3:
+            await interaction.response.send_message(
+                f"🔎 That search found **{len(matches)} flowers**.\n\n"
+                "Please type more letters to narrow the results.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            f"🔍 **Flowers matching "
+            f"`{self.flower_name.value}`:**\n\n"
+            "Choose the correct flower:",
+            view=TaskBlossomMatchView(
+                self.review_view,
+                self.unknown_entry,
+                matches
+            ),
+            ephemeral=True
+        )
+
+class TaskBlossomMatchView(discord.ui.View):
+
+    def __init__(
+        self,
+        review_view,
+        unknown_entry,
+        matches
+    ):
+        super().__init__(timeout=600)
+
+        self.review_view = review_view
+        self.unknown_entry = unknown_entry
+        self.matches = matches
+
+        for blossom in matches:
+
+            button = discord.ui.Button(
+                label=blossom[:80],
+                style=discord.ButtonStyle.primary
+            )
+
+            async def callback(
+                interaction,
+                blossom_name=blossom
+            ):
+                await self.choose_blossom(
+                    interaction,
+                    blossom_name
+                )
+
+            button.callback = callback
+
+            self.add_item(button)
+
+    async def choose_blossom(
+        self,
+        interaction: discord.Interaction,
+        selected_blossom
+    ):
+        await interaction.response.defer(
+            ephemeral=True
+        )
+
+        task_text = (
+            self.unknown_entry.get("task_text")
+            or ""
+        )
+
+        resolution_key = normalize_blossom_name(
+            task_text
+        ).lower()
+
+        self.review_view.session.pending_blossom_resolutions[
+            resolution_key
+        ] = selected_blossom
+
+        self.review_view.pending_blossom_resolutions[
+            resolution_key
+        ] = selected_blossom
+
+        await interaction.followup.send(
+            f"🌸 **Got it!** "
+            f"`{task_text}` → **{selected_blossom}**\n\n"
+            "The flower will be treated as **"
+            f"{selected_blossom}** for this import only.",
+            ephemeral=True
+        )
+
+        await interaction.followup.send(
+            "🔄 **Resuming the import preview...**",
+            ephemeral=True
+        )
+
+        await run_importtasklog(
+            interaction,
+            self.review_view.session
+        )
+
+class TaskBlossomReviewView(discord.ui.View):
+    """
+    Queue of unresolved blossoms.
+
+    Only one unresolved flower is handled at a time.
+
+    Manual blossom selections are kept temporarily in the
+    import session and are never written to Supabase.
+    """
+
+    def __init__(
+        self,
+        blossom_names,
+        unknown_entries,
+        session
+    ):
+        super().__init__(timeout=600)
+
+        self.blossom_names = blossom_names
+        self.unknown_entries = list(
+            unknown_entries
+        )
+        self.session = session
+
+        self.pending_blossom_resolutions = (
+            session.pending_blossom_resolutions
+        )
+
+        self.identify_button = discord.ui.Button(
+            label="Identify Flower",
+            emoji="🌸",
+            style=discord.ButtonStyle.primary
+        )
+
+        self.identify_button.callback = (
+            self.open_search
+        )
+
+        self.add_item(
+            self.identify_button
+        )
+
+    async def open_search(
+        self,
+        interaction: discord.Interaction
+    ):
+        if not self.unknown_entries:
+
+            await interaction.response.send_message(
+                "✅ All flowers have already been identified.",
+                ephemeral=True
+            )
+            return
+
+        unknown_entry = (
+            self.unknown_entries[0]
+        )
+
+        await interaction.response.send_modal(
+            TaskBlossomSearchModal(
+                self,
+                unknown_entry
+            )
+        )
 
 class TaskPlayerSearchModal(discord.ui.Modal):
 
@@ -4886,6 +5110,13 @@ class TaskImportSession:
         # Aliases proposed during this import.
         self.pending_aliases = []
 
+        # Manual blossom resolutions made during this import.
+        #
+        # These are temporary and are NOT saved to Supabase.
+        # Key = normalized OCR blossom text
+        # Value = canonical blossom name
+        self.pending_blossom_resolutions = {}
+
         # Ownership records proposed during this import.
         self.pending_imports = []
 
@@ -4980,11 +5211,19 @@ async def run_importtasklog(
         
         blossom_names = load_blossom_names()
 
+        # Add manual blossom resolutions made during this
+        # import session. These are temporary and have NOT
+        # been saved to Supabase.
+        pending_blossom_resolutions = (
+            session.pending_blossom_resolutions
+        )
+
         lines = [
             "🌸 **Blossom import preview:**"
         ]
 
         unknown_entries = []
+        unknown_blossom_entries = []
 
         pending_imports = session.pending_imports
         
@@ -5019,11 +5258,39 @@ async def run_importtasklog(
                 server_number,
                 player_aliases
             )
-
-            blossom_result = resolve_blossom(
-                entry.get("task_text"),
-                blossom_names
+            
+            task_text = (
+                entry.get("task_text")
+                or ""
             )
+
+            blossom_key = normalize_blossom_name(
+                task_text
+            ).lower()
+
+            if blossom_key in pending_blossom_resolutions:
+
+                canonical_blossom = (
+                    pending_blossom_resolutions[
+                        blossom_key
+                    ]
+                )
+
+                blossom_result = {
+                    "blossom": canonical_blossom,
+                    "confidence": 1.0,
+                    "match_type": "manual",
+                    "needs_review": False
+                }
+
+            else:
+
+                blossom_result = resolve_blossom(
+                    task_text,
+                    blossom_names
+                )
+
+                canonical_blossom = None
 
             task_number = entry.get("task_number")
             action = entry.get("action")
@@ -5061,7 +5328,6 @@ async def run_importtasklog(
             # Blossom resolution
             # -----------------------------------------------------
 
-            canonical_blossom = None
 
             if blossom_result:
 
@@ -5128,6 +5394,7 @@ async def run_importtasklog(
                     )
 
                     review_count += 1
+                    unknown_blossom_entries.append(entry)
 
             else:
 
@@ -5153,6 +5420,7 @@ async def run_importtasklog(
                 )
 
                 review_count += 1
+                unknown_blossom_entries.append(entry)
 
             # -----------------------------------------------------
             # If either player or blossom needs review, finish this
@@ -5374,6 +5642,31 @@ async def run_importtasklog(
                 "🔍 **One or more players need identification.**"
             )
 
+        elif unknown_blossom_entries:
+        
+            lines.append("")
+            lines.append(
+                "🌸 **One or more flower names need identification.**"
+            )
+        
+            lines.append("")
+            lines.append(
+                "Use **Identify Flower** to choose the correct "
+                "canonical flower name."
+            )
+        
+            view = TaskBlossomReviewView(
+                blossom_names,
+                unknown_blossom_entries,
+                session
+            )
+        
+            await interaction.followup.send(
+                "\n".join(lines)[:1900],
+                ephemeral=True,
+                view=view
+            )
+        
         elif review_count:
 
             lines.append("")
