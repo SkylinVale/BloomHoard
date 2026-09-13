@@ -5649,23 +5649,6 @@ async def run_importtasklog(
                 "🌸 **One or more flower names need identification.**"
             )
         
-            lines.append("")
-            lines.append(
-                "Use **Identify Flower** to choose the correct "
-                "canonical flower name."
-            )
-        
-            view = TaskBlossomReviewView(
-                blossom_names,
-                unknown_blossom_entries,
-                session
-            )
-        
-            await interaction.followup.send(
-                "\n".join(lines)[:1900],
-                ephemeral=True,
-                view=view
-            )
         
         elif review_count:
 
@@ -5707,22 +5690,45 @@ async def run_importtasklog(
                 view=view
             )
 
+        elif unknown_blossom_entries:
+
+            lines.append("")
+            lines.append(
+                "Use **Identify Flower** to choose the correct "
+                "canonical flower name."
+            )
+
+            view = TaskBlossomReviewView(
+                blossom_names,
+                unknown_blossom_entries,
+                session
+            )
+
+            await interaction.followup.send(
+                "\n".join(lines)[:1900],
+                ephemeral=True,
+                view=view
+            )
+
         elif review_count:
+
             lines.append("")
             lines.append(
                 "⚠️ **Import stopped — one or more blossom names "
                 "could not be matched.**"
             )
+
             lines.append("")
             lines.append(
                 "Please check the problematic flower name(s) in the "
                 "game and BlossomHoard's blossom reference data."
             )
+
             lines.append(
                 "If the game has renamed a flower, update the blossom "
                 "reference data first, then run `/importtasklog` again."
             )
-        
+
             await interaction.followup.send(
                 "\n".join(lines)[:1900],
                 ephemeral=True
