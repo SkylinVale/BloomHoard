@@ -1212,44 +1212,6 @@ def parse_task_logs(
 
     return unique_entries
 
-def group_ocr_lines(words: list[dict]) -> list[str]:
-    """Group OCR words into readable lines using their Y coordinates."""
-
-    if not words:
-        return []
-
-    # Sort primarily by vertical position, then horizontal position
-    words = sorted(words, key=lambda w: (w["y"], w["x"]))
-
-    lines = []
-    current_line = []
-    current_y = None
-
-    # Words within this many pixels vertically are considered
-    # part of the same text line.
-    Y_TOLERANCE = 12
-
-    for word in words:
-        if current_y is None:
-            current_y = word["y"]
-            current_line = [word]
-            continue
-
-        if abs(word["y"] - current_y) <= Y_TOLERANCE:
-            current_line.append(word)
-        else:
-            current_line.sort(key=lambda w: w["x"])
-            lines.append(" ".join(w["text"] for w in current_line))
-
-            current_line = [word]
-            current_y = word["y"]
-
-    if current_line:
-        current_line.sort(key=lambda w: w["x"])
-        lines.append(" ".join(w["text"] for w in current_line))
-
-    return lines
-
 async def resolve_game_identity(server_number: int, game_name: str):
     game_name = game_name.strip()
 
