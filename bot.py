@@ -5226,8 +5226,10 @@ async def run_importtasklog(
         unknown_blossom_entries = []
 
         pending_imports = session.pending_imports
-        
-        pending_keys = {
+
+        # Flowers already staged during an earlier pass of this
+        # import session.
+        session_keys = {
             (
                 item["gamename"],
                 item["blossom"]
@@ -5235,7 +5237,12 @@ async def run_importtasklog(
             for item in pending_imports
         }
         
-        new_count = 0
+        # Flowers encountered during THIS pass.
+        # Used to detect true duplicates in the uploaded screenshots.
+        pending_keys = set()
+        
+        # Total number of flowers currently staged for import.
+        new_count = len(pending_imports)
         owned_count = 0
         duplicate_count = 0
         review_count = 0
@@ -5488,8 +5495,34 @@ async def run_importtasklog(
             )
 
             # -----------------------------------------------------
-            # Check duplicate within this upload BEFORE printing
-            # the full resolution block.
+            # If this flower was already staged during an earlier
+            # pass of this import session, do not add it again.
+            #
+            # This is NOT a duplicate. It is already waiting in
+            # the session for final confirmation.
+            # -----------------------------------------------------
+
+            if import_key in session_keys:
+
+                lines.append("")
+                lines.append(
+                    f"**Task {task_number} — {action} "
+                    f"— {current_gamename}**"
+                )
+
+                lines.append(
+                    f"🌸 {entry.get('task_text')}"
+                )
+
+                lines.append(
+                    "➡️ 📦 **ALREADY STAGED — "
+                    "WILL IMPORT**"
+                )
+
+                continue
+
+            # -----------------------------------------------------
+            # Check duplicate within THIS processing pass.
             # -----------------------------------------------------
 
             if import_key in pending_keys:
@@ -5594,6 +5627,7 @@ async def run_importtasklog(
                     "gamename": current_gamename,
                     "blossom": canonical_blossom,
                 })
+
 
         # ---------------------------------------------------------
         # Summary
