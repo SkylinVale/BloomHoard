@@ -3805,11 +3805,6 @@ async def whitelist(interaction: discord.Interaction, sort: str = "alpha"):
 
         if not ownership_rows:
             return None
-
-        print(
-            f"WHITELIST OWNERSHIP ROWS LOADED: "
-            f"{len(ownership_rows)}"
-        )
         
         blossom_names = list({
             row["blossom"]
@@ -3824,65 +3819,6 @@ async def whitelist(interaction: discord.Interaction, sort: str = "alpha"):
             .execute()
             .data
         }
-
-        # ============================================================
-        # TEMP WHITELIST DIAGNOSTIC
-        # ============================================================
-
-        print("\n" + "=" * 70)
-        print("WHITELIST DIAGNOSTIC")
-        print("=" * 70)
-
-        watch_players = {
-            "Matilda",
-            "Lovesage",
-            "Starla",
-            "Sapphire",
-            "Kirative",
-        }
-
-        print(f"ALL PLAYERS: {len(all_players)}")
-        print(f"ACTIVE PLAYERS: {len(active_players)}")
-        print(
-            "WATCH PLAYERS ACTIVE STATUS:"
-        )
-
-        for name in sorted(watch_players):
-            print(
-                f"  {name}: "
-                f"{'ACTIVE' if name in active_players else 'NOT ACTIVE'}"
-            )
-
-        watch_flowers = {
-            "Blooming Waters",
-            "Red Leucospermum",
-        }
-
-        print("\nWATCH FLOWER OWNERSHIP ROWS:")
-        for row in ownership_rows:
-            if row["blossom"] in watch_flowers:
-                print(
-                    f"  {row['gamename']} -> {row['blossom']}"
-                )
-
-        print(
-            "\nWATCH FLOWERS FOUND IN OWNERSHIP QUERY:"
-        )
-
-        for flower in sorted(watch_flowers):
-            owners = sorted(
-                row["gamename"]
-                for row in ownership_rows
-                if row["blossom"] == flower
-            )
-
-            print(
-                f"  {flower}: "
-                f"{owners if owners else 'NOT FOUND'}"
-            )
-
-        print("=" * 70)
-
         
         member_tiers: dict[str, dict[int, list[str]]] = {}
 
