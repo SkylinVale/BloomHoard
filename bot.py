@@ -3783,19 +3783,37 @@ async def whitelist(interaction: discord.Interaction, sort: str = "alpha"):
         if not active_players:
             return None
 
-        ownership = (
-            supabase.table("ownership")
-            .select("gamename, blossom")
-            .in_("gamename", list(active_players))
-            .execute()
-        )
+        ownership_rows = []
+        start = 0
+        batch_size = 1000
 
-        if not ownership.data:
+        while True:
+            batch = (
+                supabase.table("ownership")
+                .select("gamename, blossom")
+                .in_("gamename", list(active_players))
+                .range(start, start + batch_size - 1)
+                .execute()
+            )
+
+            ownership_rows.extend(batch.data or [])
+
+            if len(batch.data or []) < batch_size:
+                break
+
+            start += batch_size
+
+        if not ownership_rows:
             return None
 
+        print(
+            f"WHITELIST OWNERSHIP ROWS LOADED: "
+            f"{len(ownership_rows)}"
+        )
+        
         blossom_names = list({
             row["blossom"]
-            for row in ownership.data
+            for row in ownership_rows
         })
 
         blossom_details = {
@@ -3841,7 +3859,7 @@ async def whitelist(interaction: discord.Interaction, sort: str = "alpha"):
         }
 
         print("\nWATCH FLOWER OWNERSHIP ROWS:")
-        for row in ownership.data:
+        for row in ownership_rows:
             if row["blossom"] in watch_flowers:
                 print(
                     f"  {row['gamename']} -> {row['blossom']}"
@@ -3854,7 +3872,7 @@ async def whitelist(interaction: discord.Interaction, sort: str = "alpha"):
         for flower in sorted(watch_flowers):
             owners = sorted(
                 row["gamename"]
-                for row in ownership.data
+                for row in ownership_rows
                 if row["blossom"] == flower
             )
 
@@ -3864,10 +3882,11 @@ async def whitelist(interaction: discord.Interaction, sort: str = "alpha"):
             )
 
         print("=" * 70)
+
         
         member_tiers: dict[str, dict[int, list[str]]] = {}
 
-        for row in ownership.data:
+        for row in ownership_rows:
             b = blossom_details.get(row["blossom"], {})
             pts = b.get("points")
 
